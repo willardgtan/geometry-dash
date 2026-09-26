@@ -21,6 +21,7 @@ pub use principals::{
     LearnerPrincipal, LearnerState, SecurityPattern, PolicyRecommendation, UsageAnalysis, MLReadiness,
     EvaluatorPrincipal, EvaluatorState, DecisionEvaluation, PolicyEffectiveness, ComplianceReport, DecisionQuality,
     SealerPrincipal, SealerState, ConsistencyCheck, ConsistencyViolation, ConsistencyAction, ConsistencyReport,
+    DeveloperPrincipal, DeveloperState, TracePoint, IntrospectionSnapshot, DiagnosticReport, PerformanceMetric,
 };
 pub use types::{Principal, InterfaceId, MessageType, DataClass};
 

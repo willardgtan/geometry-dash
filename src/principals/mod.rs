@@ -8,6 +8,7 @@ pub mod declassifier;
 pub mod learner;
 pub mod evaluator;
 pub mod sealer;
+pub mod developer;
 
 pub use policy::{PolicyPrincipal, PolicyState, GateADecision};
 pub use actuator::{ActuatorPrincipal, ActuatorState, CommandRequest, ExecutionResult, GateCDecision, GateIDecision};
@@ -16,3 +17,4 @@ pub use declassifier::{DeclassifierPrincipal, DeclassifierState, ClassificationL
 pub use learner::{LearnerPrincipal, LearnerState, SecurityPattern, PolicyRecommendation, UsageAnalysis, MLReadiness};
 pub use evaluator::{EvaluatorPrincipal, EvaluatorState, DecisionEvaluation, PolicyEffectiveness, ComplianceReport, DecisionQuality};
 pub use sealer::{SealerPrincipal, SealerState, ConsistencyCheck, ConsistencyViolation, ConsistencyAction, ConsistencyReport};
+pub use developer::{DeveloperPrincipal, DeveloperState, TracePoint, IntrospectionSnapshot, DiagnosticReport, PerformanceMetric};
