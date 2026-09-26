@@ -576,3 +576,185 @@ fn bench_supervisor_heartbeat_latency() {
     // Should be very fast (sub-microsecond)
     assert!(avg_us < 100.0, "Heartbeat too slow: {:.3} µs", avg_us);
 }
+
+// ============================================================================
+// Edge Case & Failure Scenario Tests
+// ============================================================================
+
+#[test]
+fn test_principal_crash_detection_via_timeout() {
+    let temp = NamedTempFile::new().unwrap();
+    let supervisor = Supervisor::initialize(temp.path().to_str().unwrap(), None).unwrap();
+
+    // Principal is NotStarted, so it's unhealthy
+    assert!(!supervisor.is_principal_healthy(Principal::Policy));
+
+    // Send one heartbeat
+    supervisor.heartbeat(Principal::Policy);
+    assert!(supervisor.is_principal_healthy(Principal::Policy));
+
+    // Wait for heartbeat timeout (default 1000ms)
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    // Now principal should be unhealthy due to timeout
+    assert!(!supervisor.is_principal_healthy(Principal::Policy));
+}
+
+#[test]
+fn test_handshake_timeout_detection() {
+    use std::time::Instant;
+
+    let ctx = StartupContext::new(
+        "run-1".to_string(),
+        "boot-1".to_string(),
+        "epoch-1".to_string(),
+        "/var/run/geometry-dash".to_string(),
+    );
+
+    let mut orchestrator = PrincipalOrchestrator::new(ctx);
+    orchestrator.add_principal(
+        Principal::Policy,
+        1001,
+        1001,
+        "strict".to_string(),
+        "policy".to_string(),
+    );
+
+    // Send INIT but don't send READY
+    let init_result = orchestrator.send_init(Principal::Policy, 100);
+    assert!(init_result.is_ok());
+
+    // Check that principal is NOT ready immediately
+    assert!(!orchestrator.is_principal_ready(Principal::Policy));
+
+    // Attempt to wait with short timeout
+    let start = Instant::now();
+    let wait_result = orchestrator.wait_all_ready(500);  // 500ms timeout
+    let elapsed = start.elapsed();
+
+    // Should timeout after ~500ms
+    assert!(wait_result.is_err());
+    assert!(elapsed.as_millis() >= 450);  // Allow some margin
+}
+
+#[test]
+fn test_nonce_cache_prevents_replay_same_interface() {
+    let cache = NonceCache::new(5000, 100_000);
+    let nonce = [42u8; 32];
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+
+    // First insertion should succeed
+    assert!(cache.check_and_insert(nonce, 1, 100, 1, ts).is_ok());
+
+    // Replay of same nonce on same interface should fail
+    let result = cache.check_and_insert(nonce, 1, 101, 1, ts + 100);
+    assert!(result.is_err(), "Nonce replay not prevented!");
+}
+
+#[test]
+fn test_capability_matrix_prevents_unauthorized_access() {
+    let mut matrix = CapabilityMatrix::new();
+
+    // Policy can use IF-002
+    matrix.allow(1, 2);
+
+    // Actuator cannot use IF-002 (not allowed)
+    assert!(!matrix.can_use(2, 2));
+
+    // But Policy can
+    assert!(matrix.can_use(1, 2));
+}
+
+#[test]
+fn test_security_ledger_chain_integrity_after_writes() {
+    let temp = NamedTempFile::new().unwrap();
+    let ledger = geometry_dash::SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+    use std::collections::HashMap;
+
+    // Write multiple events
+    for i in 0..100 {
+        let mut details = HashMap::new();
+        details.insert("iteration".to_string(), i.to_string());
+
+        let _ = ledger.append_event(
+            EventType::ActionRequested,
+            Principal::Policy,
+            Severity::Info,
+            "run-1",
+            "boot-1",
+            "epoch-1",
+            details,
+        );
+    }
+
+    // Verify chain integrity
+    let result = ledger.verify_chain();
+    assert!(result.is_ok(), "Chain integrity check failed");
+}
+
+#[test]
+fn test_supervisor_lockdown_mode() {
+    let temp = NamedTempFile::new().unwrap();
+    let supervisor = Supervisor::initialize(temp.path().to_str().unwrap(), None).unwrap();
+
+    // Initial state should be Initializing
+    assert_eq!(supervisor.state(), SupervisorState::Initializing);
+
+    // Enter lockdown
+    supervisor.enter_lockdown();
+
+    // Should now be in Lockdown state
+    assert_eq!(supervisor.state(), SupervisorState::Lockdown);
+
+    // Verify lockdown was logged
+    assert!(supervisor.ledger_entries() > 0);
+}
+
+#[test]
+fn test_message_flag_combinations_validity() {
+    let test_flags = vec![
+        0x01,  // REQUIRES_AUTH
+        0x02,  // REQUIRES_NONCE
+        0x04,  // REQUIRES_RESPONSE
+        0x08,  // IDEMPOTENT
+        0x10,  // PRIORITY_HIGH
+        0x20,  // CRITICAL
+        0x03,  // AUTH + NONCE
+        0x0C,  // RESPONSE + IDEMPOTENT
+        0x1F,  // Multiple flags
+        0xFF,  // All flags
+    ];
+
+    for flags in test_flags {
+        let msg = UniversalMessage::new(1, 0, 1, 2, flags, b"test".to_vec());
+        assert_eq!(msg.header.flags, flags);
+        assert!(msg.validate_size().is_ok());
+    }
+}
+
+#[test]
+fn test_principal_health_crash_count_independence() {
+    let temp = NamedTempFile::new().unwrap();
+    let supervisor = Supervisor::initialize(temp.path().to_str().unwrap(), None).unwrap();
+
+    // Get initial health for both principals
+    let health1_initial = supervisor.principal_health(Principal::Policy).unwrap();
+    let health2_initial = supervisor.principal_health(Principal::Actuator).unwrap();
+
+    assert_eq!(health1_initial.crash_count, 0);
+    assert_eq!(health2_initial.crash_count, 0);
+
+    // Send heartbeat to one principal
+    supervisor.heartbeat(Principal::Policy);
+
+    // Other principal should still be at 0 crash count
+    let health2_after = supervisor.principal_health(Principal::Actuator).unwrap();
+    assert_eq!(health2_after.crash_count, 0);
+
+    // And Policy should be running
+    assert_eq!(supervisor.principal_health(Principal::Policy).unwrap().state, PrincipalState::Running);
+}
