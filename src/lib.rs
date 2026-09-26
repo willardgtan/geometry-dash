@@ -20,6 +20,7 @@ pub use principals::{
     DeclassifierPrincipal, DeclassifierState, ClassificationLevel, ClassificationDecision, DeclassificationRequest, DeclassificationDecision, ClassificationLabel,
     LearnerPrincipal, LearnerState, SecurityPattern, PolicyRecommendation, UsageAnalysis, MLReadiness,
     EvaluatorPrincipal, EvaluatorState, DecisionEvaluation, PolicyEffectiveness, ComplianceReport, DecisionQuality,
+    SealerPrincipal, SealerState, ConsistencyCheck, ConsistencyViolation, ConsistencyAction, ConsistencyReport,
 };
 pub use types::{Principal, InterfaceId, MessageType, DataClass};
 
