@@ -373,11 +373,142 @@ impl SealerPrincipal {
         )
     }
 
+    // === Sprint 1: Evidence Sealing Operations (SEC-C02) ===
+
+    /// Seal an evidence bundle with cryptographic signature
+    /// Prerequisites:
+    /// - All artifacts exist at specified paths with correct hashes
+    /// - HSM is available for signing
+    /// - Evidence directory is writable (will be marked read-only after seal)
+    pub fn seal_evidence(
+        &self,
+        bundle_id: String,
+        run_id: String,
+        boot_id: String,
+        epoch_id: String,
+        evidence_dir: &str,
+        artifacts: Vec<crate::evidence::ArtifactRef>,
+        policy_snapshot_hash: [u8; 32],
+        config_snapshot_hash: [u8; 32],
+        event_root_hash: [u8; 32],
+    ) -> Result<SealEvidenceResult, String> {
+        self.set_state(SealerState::Sealing);
+
+        // Step 1: Verify all artifact hashes match files on disk
+        for artifact in &artifacts {
+            let file_path = format!("{}/{}", evidence_dir, artifact.artifact_id);
+
+            // Compute file hash
+            let computed_hash = Self::compute_file_hash(&file_path)
+                .map_err(|e| format!("Failed to hash artifact {}: {}", artifact.artifact_id, e))?;
+
+            if computed_hash != artifact.file_hash {
+                return Err(format!(
+                    "Artifact {} hash mismatch: expected {}, got {}",
+                    artifact.artifact_id,
+                    hex::encode(artifact.file_hash),
+                    hex::encode(computed_hash)
+                ));
+            }
+        }
+
+        // Step 2: Create manifest
+        let mut manifest = crate::evidence::EvidenceManifest::new(
+            bundle_id.clone(),
+            run_id.clone(),
+            boot_id.clone(),
+            epoch_id.clone(),
+        );
+
+        manifest.artifacts = artifacts;
+        manifest.policy_snapshot_hash = policy_snapshot_hash;
+        manifest.config_snapshot_hash = config_snapshot_hash;
+        manifest.event_root_hash = event_root_hash;
+        manifest.sealer_principal = Principal::Sealer;
+
+        // Step 3: Calculate manifest hash for signing
+        let manifest_hash = manifest.calculate_hash();
+
+        // Step 4: Sign manifest (would use HSM in production)
+        // For now, use a placeholder signature
+        manifest.seal_signature = [0x55u8; 64];  // Placeholder
+
+        use std::time::{SystemTime, UNIX_EPOCH};
+        manifest.sealed_timestamp_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+
+        // Step 5: Write manifest to evidence directory
+        let manifest_path = format!("{}/MANIFEST.json", evidence_dir);
+        let manifest_json = serde_json::to_string_pretty(&manifest)
+            .map_err(|e| format!("Manifest serialization failed: {}", e))?;
+
+        std::fs::write(&manifest_path, manifest_json)
+            .map_err(|e| format!("Failed to write manifest: {}", e))?;
+
+        // Step 6: Make evidence directory read-only (Unix only, gracefully fail on Windows)
+        #[cfg(unix)]
+        {
+            use std::fs;
+            use std::os::unix::fs::PermissionsExt;
+
+            let perms = fs::Permissions::from_mode(0o555);  // r-xr-xr-x
+            let _ = fs::set_permissions(evidence_dir, perms);
+        }
+
+        self.set_state(SealerState::Ready);
+
+        Ok(SealEvidenceResult {
+            bundle_id,
+            manifest_hash,
+            seal_signature: manifest.seal_signature,
+            sealed_timestamp_ns: manifest.sealed_timestamp_ns,
+            total_artifact_size: manifest.total_artifact_size(),
+            success: true,
+        })
+    }
+
+    /// Compute SHA-256 hash of a file (for artifact verification)
+    fn compute_file_hash(path: &str) -> std::io::Result<[u8; 32]> {
+        use sha2::Digest;
+        use std::fs::File;
+        use std::io::Read;
+
+        let mut file = File::open(path)?;
+        let mut hasher = sha2::Sha256::new();
+
+        let mut buffer = [0u8; 8192];
+        loop {
+            let bytes_read = file.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..bytes_read]);
+        }
+
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        Ok(hash)
+    }
+
     /// Shutdown sealer principal
     pub fn shutdown(&self) -> std::io::Result<()> {
         self.set_state(SealerState::Shutdown);
         Ok(())
     }
+}
+
+/// Result of sealing evidence
+#[derive(Debug, Clone)]
+pub struct SealEvidenceResult {
+    pub bundle_id: String,
+    pub manifest_hash: [u8; 32],
+    pub seal_signature: [u8; 64],
+    pub sealed_timestamp_ns: u64,
+    pub total_artifact_size: u64,
+    pub success: bool,
 }
 
 #[cfg(test)]
@@ -789,5 +920,175 @@ mod tests {
         assert_eq!(v_medium.severity, "medium");
         assert_eq!(v_high.severity, "high");
         assert_eq!(v_critical.severity, "critical");
+    }
+
+    // === Sprint 1: Evidence Sealing Tests ===
+
+    #[test]
+    fn test_seal_evidence_basic() {
+        use std::fs;
+        use std::io::Write;
+
+        let temp = TempDir::new().unwrap();
+        let ledger = Arc::new(
+            SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
+        );
+
+        let sealer = SealerPrincipal::new(
+            "sealer-016".to_string(),
+            1007,
+            1007,
+            ledger,
+        );
+
+        // Create test artifact
+        let artifact_content = b"test artifact data";
+        let artifact_path = temp.path().join("test_artifact.bin");
+        fs::write(&artifact_path, artifact_content).unwrap();
+
+        // Compute artifact hash
+        let artifact_hash = SealerPrincipal::compute_file_hash(artifact_path.to_str().unwrap()).unwrap();
+
+        // Create artifact reference
+        let artifact = crate::evidence::ArtifactRef::new(
+            "test_artifact.bin".to_string(),
+            crate::evidence::ArtifactType::CustomMetadata,
+            artifact_hash,
+            artifact_content.len() as u64,
+            Principal::Audit,
+            "Test artifact".to_string(),
+        );
+
+        // Seal evidence
+        let result = sealer.seal_evidence(
+            "bundle-001".to_string(),
+            "run-001".to_string(),
+            "boot-001".to_string(),
+            "epoch-001".to_string(),
+            temp.path().to_str().unwrap(),
+            vec![artifact],
+            [0xAAu8; 32],
+            [0xBBu8; 32],
+            [0xCCu8; 32],
+        ).unwrap();
+
+        // Verify result
+        assert!(result.success);
+        assert_eq!(result.bundle_id, "bundle-001");
+        assert!(!result.bundle_id.is_empty());
+        assert!(result.sealed_timestamp_ns > 0);
+        assert_eq!(result.total_artifact_size, artifact_content.len() as u64);
+
+        // Verify manifest was created
+        let manifest_path = temp.path().join("MANIFEST.json");
+        assert!(manifest_path.exists());
+    }
+
+    #[test]
+    fn test_seal_evidence_artifact_hash_mismatch() {
+        use std::fs;
+
+        let temp = TempDir::new().unwrap();
+        let ledger = Arc::new(
+            SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
+        );
+
+        let sealer = SealerPrincipal::new(
+            "sealer-017".to_string(),
+            1007,
+            1007,
+            ledger,
+        );
+
+        // Create artifact with wrong hash
+        let artifact_content = b"test data";
+        let artifact_path = temp.path().join("test.bin");
+        fs::write(&artifact_path, artifact_content).unwrap();
+
+        let artifact = crate::evidence::ArtifactRef::new(
+            "test.bin".to_string(),
+            crate::evidence::ArtifactType::CustomMetadata,
+            [0xFFu8; 32],  // Wrong hash!
+            artifact_content.len() as u64,
+            Principal::Audit,
+            "Test".to_string(),
+        );
+
+        // Try to seal - should fail
+        let result = sealer.seal_evidence(
+            "bundle-002".to_string(),
+            "run-002".to_string(),
+            "boot-002".to_string(),
+            "epoch-002".to_string(),
+            temp.path().to_str().unwrap(),
+            vec![artifact],
+            [0xAAu8; 32],
+            [0xBBu8; 32],
+            [0xCCu8; 32],
+        );
+
+        // Should error with hash mismatch
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("hash mismatch"));
+    }
+
+    #[test]
+    fn test_seal_evidence_multiple_artifacts() {
+        use std::fs;
+
+        let temp = TempDir::new().unwrap();
+        let ledger = Arc::new(
+            SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
+        );
+
+        let sealer = SealerPrincipal::new(
+            "sealer-018".to_string(),
+            1007,
+            1007,
+            ledger,
+        );
+
+        // Create multiple artifacts
+        let mut artifacts = vec![];
+        for i in 0..3 {
+            let content = format!("artifact {}", i).into_bytes();
+            let filename = format!("artifact_{}.bin", i);
+            let path = temp.path().join(&filename);
+            fs::write(&path, &content).unwrap();
+
+            let hash = SealerPrincipal::compute_file_hash(path.to_str().unwrap()).unwrap();
+
+            artifacts.push(crate::evidence::ArtifactRef::new(
+                filename,
+                crate::evidence::ArtifactType::CustomMetadata,
+                hash,
+                content.len() as u64,
+                Principal::Audit,
+                format!("Artifact {}", i),
+            ));
+        }
+
+        // Seal evidence with multiple artifacts
+        let result = sealer.seal_evidence(
+            "bundle-003".to_string(),
+            "run-003".to_string(),
+            "boot-003".to_string(),
+            "epoch-003".to_string(),
+            temp.path().to_str().unwrap(),
+            artifacts.clone(),
+            [0xAAu8; 32],
+            [0xBBu8; 32],
+            [0xCCu8; 32],
+        ).unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.total_artifact_size, 10 + 10 + 10);  // 3 artifacts, ~10 bytes each
+
+        // Verify manifest includes all artifacts
+        let manifest_path = temp.path().join("MANIFEST.json");
+        let manifest_json = std::fs::read_to_string(&manifest_path).unwrap();
+        let manifest: crate::evidence::EvidenceManifest = serde_json::from_str(&manifest_json).unwrap();
+
+        assert_eq!(manifest.artifact_count(), 3);
     }
 }
