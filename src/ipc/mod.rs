@@ -11,10 +11,15 @@ use crate::types::{Principal, InterfaceId};
 pub mod message;
 pub mod handshake;
 pub mod pipes;
+pub mod authenticator;
+
+#[cfg(test)]
+mod sprint3_integration_tests;
 
 pub use message::{UniversalMessage, UniversalMessageHeader};
 pub use handshake::{HandshakeMessage, HandshakeCoordinator, HandshakeState, HandshakeMessageType};
 pub use pipes::{PipeManager, PipeInfo};
+pub use authenticator::{IpcMessageAuthenticator, SignatureResult, VerificationResult, AuthenticationAuditRecord, AuthenticationStatistics};
 
 /// IPC-level errors
 #[derive(Debug, Clone)]
