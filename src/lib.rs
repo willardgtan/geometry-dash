@@ -16,7 +16,7 @@ mod sprint3_e2e_tests;
 
 pub use supervisor::{Supervisor, SupervisorState, PrincipalState, PrincipalHealth, orchestrator::PrincipalOrchestrator};
 pub use security_ledger::{SecurityLedger, SecurityEvent, EventType, Severity};
-pub use ipc::{UniversalMessage, UniversalMessageHeader, IpcError, NonceCache, CapabilityMatrix, PipeManager, PipeInfo, ExecutionToken, TokenStatus, ExecutionTokenIssuer, ExecutionTokenVerifier, TokenStatistics, ExecutionState, CommandExecutionContext, ValidatedCommand, ExecutionLock};
+pub use ipc::{UniversalMessage, UniversalMessageHeader, IpcError, NonceCache, CapabilityMatrix, PipeManager, PipeInfo, ExecutionToken, TokenStatus, ExecutionTokenIssuer, ExecutionTokenVerifier, TokenStatistics, ExecutionState, CommandExecutionContext, ValidatedCommand, ExecutionLock, StateChangeError, StateValidationResult, StateChangeValidator};
 pub use hsm::{HsmClient, AutoHsmClient, RealHsmClient, FilesystemHsmClient, SigningKey, HsmError, HsmResult};
 pub use principals::{
     PolicyPrincipal, PolicyState, GateADecision,

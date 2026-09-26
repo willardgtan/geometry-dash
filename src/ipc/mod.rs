@@ -15,6 +15,7 @@ pub mod authenticator;
 pub mod gateway;
 pub mod token;
 pub mod execution_context;
+pub mod state_validator;
 
 #[cfg(test)]
 mod sprint3_integration_tests;
@@ -26,6 +27,7 @@ pub use authenticator::{IpcMessageAuthenticator, SignatureResult, VerificationRe
 pub use gateway::{IpcMessageGateway, GatewayResult, AuthorizationDecision, GatewayStatistics};
 pub use token::{ExecutionToken, TokenStatus, ExecutionTokenIssuer, ExecutionTokenVerifier, TokenStatistics};
 pub use execution_context::{ExecutionState, GateCSnapshot, GateISnapshot, CommandSnapshot, PrincipalStateSnapshot, CommandExecutionContext, ValidatedCommand, ExecutionLock};
+pub use state_validator::{StateChangeError, StateValidationResult, StateChangeValidator};
 
 /// IPC-level errors
 #[derive(Debug, Clone)]
