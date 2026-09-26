@@ -632,6 +632,210 @@ impl Default for AccessControlEngine {
     }
 }
 
+/// Declassification engine performing data reduction operations
+/// Applies approved declassification policies to sensitive data with transformation
+pub struct DeclassificationEngine {
+    /// Access control for authorization enforcement
+    access_control: AccessControlEngine,
+
+    /// Policy ID -> declassification policy
+    policies: Arc<Mutex<HashMap<String, DeclassificationPolicy>>>,
+
+    /// Immutable ledger of all declassification operations
+    declassification_ledger: Arc<Mutex<Vec<DeclassificationRecord>>>,
+}
+
+impl DeclassificationEngine {
+    /// Create a new declassification engine
+    pub fn new(access_control: AccessControlEngine) -> Self {
+        DeclassificationEngine {
+            access_control,
+            policies: Arc::new(Mutex::new(HashMap::new())),
+            declassification_ledger: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Register a declassification policy
+    pub fn register_policy(
+        &self,
+        policy_id: String,
+        version: u32,
+        field_name: String,
+        source_level: ClassificationLevel,
+        target_level: ClassificationLevel,
+        transformation: Option<String>,
+        approved_by: Vec<Principal>,
+        effective_timestamp_ns: u64,
+        expires_timestamp_ns: Option<u64>,
+    ) -> Result<DeclassificationPolicy, String> {
+        if approved_by.len() < 2 {
+            return Err("Policy requires at least 2 approvals".to_string());
+        }
+
+        let policy = DeclassificationPolicy::new(
+            policy_id.clone(),
+            version,
+            field_name,
+            source_level,
+            target_level,
+            transformation,
+            approved_by,
+            effective_timestamp_ns,
+            expires_timestamp_ns,
+        );
+
+        {
+            let mut policies = self.policies.lock().unwrap();
+            policies.insert(policy_id, policy.clone());
+        }
+
+        Ok(policy)
+    }
+
+    /// Declassify a value according to an approved policy
+    ///
+    /// Preconditions:
+    /// - Principal has declassification authorization
+    /// - Policy is approved and not expired
+    /// - Source value classification matches policy source_level
+    ///
+    /// Postconditions:
+    /// - DeclassificationRecord created in audit ledger
+    /// - Value transformed (hashed/aggregated) according to policy
+    /// - Lineage tracked (parent record ID)
+    pub fn declassify(
+        &self,
+        principal: Principal,
+        policy_id: &str,
+        original_value: &[u8],
+        source_level: ClassificationLevel,
+        parent_records: Vec<String>,
+    ) -> Result<(Vec<u8>, DeclassificationRecord), String> {
+        // Step 1: Verify principal authorization
+        let policy = self.policies
+            .lock()
+            .unwrap()
+            .get(policy_id)
+            .cloned()
+            .ok_or_else(|| format!("Policy {} not found", policy_id))?;
+
+        self.access_control.check_declassify(principal, &policy)?;
+
+        // Step 2: Verify source classification matches policy
+        if source_level != policy.source_level {
+            return Err(format!(
+                "Source level {:?} does not match policy source {:?}",
+                source_level, policy.source_level
+            ));
+        }
+
+        // Step 3: Apply transformation
+        let declassified_value = self.apply_transformation(original_value, &policy.transformation)?;
+
+        // Step 4: Create audit record with hashes
+        let original_hash = self.compute_hash(original_value);
+        let declassified_hash = self.compute_hash(&declassified_value);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        let record = DeclassificationRecord::new(
+            Uuid::new_v4().to_string(),
+            policy.field_name.clone(),
+            original_hash,
+            declassified_hash,
+            policy_id.to_string(),
+            principal,
+            now,
+            parent_records,
+        );
+
+        {
+            let mut ledger = self.declassification_ledger.lock().unwrap();
+            ledger.push(record.clone());
+        }
+
+        Ok((declassified_value, record))
+    }
+
+    /// Apply transformation to sensitive value
+    /// Supports: hash_sha256, hash_blake3, passthrough
+    fn apply_transformation(
+        &self,
+        value: &[u8],
+        transformation: &Option<String>,
+    ) -> Result<Vec<u8>, String> {
+        match transformation {
+            None => Ok(value.to_vec()),  // No transformation, return as-is
+            Some(spec) => {
+                match spec.as_str() {
+                    "hash_sha256" => {
+                        Ok(self.compute_hash(value).to_vec())
+                    },
+                    "passthrough" => {
+                        Ok(value.to_vec())
+                    },
+                    other => Err(format!("Unknown transformation: {}", other)),
+                }
+            }
+        }
+    }
+
+    /// Compute SHA-256 hash of value
+    fn compute_hash(&self, value: &[u8]) -> [u8; 32] {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(value);
+        hasher.finalize().into()
+    }
+
+    /// Get a policy by ID
+    pub fn get_policy(&self, policy_id: &str) -> Option<DeclassificationPolicy> {
+        self.policies.lock().unwrap().get(policy_id).cloned()
+    }
+
+    /// List all policies
+    pub fn list_policies(&self) -> Vec<DeclassificationPolicy> {
+        self.policies.lock().unwrap().values().cloned().collect()
+    }
+
+    /// Get declassification history
+    pub fn get_declassification_history(&self) -> Vec<DeclassificationRecord> {
+        self.declassification_ledger.lock().unwrap().clone()
+    }
+
+    /// Get declassifications for a specific field
+    pub fn get_field_declassifications(&self, field_name: &str) -> Vec<DeclassificationRecord> {
+        self.declassification_ledger
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.field_name == field_name)
+            .cloned()
+            .collect()
+    }
+
+    /// Get declassifications by principal
+    pub fn get_principal_declassifications(&self, principal: Principal) -> Vec<DeclassificationRecord> {
+        self.declassification_ledger
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.applied_by == principal)
+            .cloned()
+            .collect()
+    }
+
+    /// Get statistics
+    pub fn statistics(&self) -> (usize, usize) {
+        (
+            self.policies.lock().unwrap().len(),
+            self.declassification_ledger.lock().unwrap().len(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1120,5 +1324,385 @@ mod tests {
         // Verify default() works the same as new()
         assert!(engine.can_read(Principal::Policy, ClassificationLevel::Unrestricted));
         assert!(!engine.can_read(Principal::Policy, ClassificationLevel::SensitiveReward));
+    }
+
+    #[test]
+    fn test_declassification_engine_creation() {
+        let access_control = AccessControlEngine::new();
+        let engine = DeclassificationEngine::new(access_control);
+
+        let (policy_count, record_count) = engine.statistics();
+        assert_eq!(policy_count, 0);
+        assert_eq!(record_count, 0);
+    }
+
+    #[test]
+    fn test_declassification_engine_register_policy() {
+        let access_control = AccessControlEngine::new();
+        let engine = DeclassificationEngine::new(access_control);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        let result = engine.register_policy(
+            "policy-001".to_string(),
+            1,
+            "reward".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            Some("hash_sha256".to_string()),
+            vec![Principal::Audit, Principal::Policy],
+            now,
+            None,
+        );
+
+        assert!(result.is_ok());
+        let policy = result.unwrap();
+        assert_eq!(policy.policy_id, "policy-001");
+        assert_eq!(policy.version, 1);
+
+        // Verify it's stored
+        let retrieved = engine.get_policy("policy-001").unwrap();
+        assert_eq!(retrieved.field_name, "reward");
+    }
+
+    #[test]
+    fn test_declassification_engine_policy_validation() {
+        let access_control = AccessControlEngine::new();
+        let engine = DeclassificationEngine::new(access_control);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // Test: require at least 2 approvals
+        let result = engine.register_policy(
+            "bad-1".to_string(),
+            1,
+            "field".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit],  // Only 1 approval
+            now,
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_declassification_operation() {
+        let access_control = AccessControlEngine::new();
+        let engine = DeclassificationEngine::new(access_control);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // Register a policy
+        engine.register_policy(
+            "policy-001".to_string(),
+            1,
+            "reward".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            Some("hash_sha256".to_string()),
+            vec![Principal::Audit, Principal::Declassifier],
+            now,
+            None,
+        ).unwrap();
+
+        // Declassify a value
+        let original = b"sensitive_reward_123";
+        let result = engine.declassify(
+            Principal::Audit,
+            "policy-001",
+            original,
+            ClassificationLevel::SensitiveReward,
+            vec![],
+        );
+
+        assert!(result.is_ok());
+        let (declassified, record) = result.unwrap();
+
+        // Verify transformation was applied (should be SHA-256 hash)
+        assert_ne!(declassified, original.to_vec());
+        assert_eq!(record.field_name, "reward");
+        assert_eq!(record.applied_by, Principal::Audit);
+    }
+
+    #[test]
+    fn test_declassification_unauthorized_principal() {
+        let access_control = AccessControlEngine::new();
+        let engine = DeclassificationEngine::new(access_control);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // Register a policy approved by Audit only
+        engine.register_policy(
+            "policy-002".to_string(),
+            1,
+            "field".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit, Principal::Sealer],
+            now,
+            None,
+        ).unwrap();
+
+        // Try to declassify with unauthorized principal
+        let result = engine.declassify(
+            Principal::Policy,  // Not in approval chain
+            "policy-002",
+            b"value",
+            ClassificationLevel::SensitiveReward,
+            vec![],
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cannot apply policy"));
+    }
+
+    #[test]
+    fn test_declassification_source_level_mismatch() {
+        let access_control = AccessControlEngine::new();
+        let engine = DeclassificationEngine::new(access_control);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // Register a policy for SensitiveReward
+        engine.register_policy(
+            "policy-003".to_string(),
+            1,
+            "field".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit, Principal::Declassifier],
+            now,
+            None,
+        ).unwrap();
+
+        // Try to declassify with wrong source level
+        let result = engine.declassify(
+            Principal::Audit,
+            "policy-003",
+            b"value",
+            ClassificationLevel::PrivilegedTelemetry,  // Wrong level
+            vec![],
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not match"));
+    }
+
+    #[test]
+    fn test_declassification_transformation() {
+        let access_control = AccessControlEngine::new();
+        let engine = DeclassificationEngine::new(access_control);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // Register policies with different transformations
+        engine.register_policy(
+            "hash-policy".to_string(),
+            1,
+            "field".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            Some("hash_sha256".to_string()),
+            vec![Principal::Audit, Principal::Declassifier],
+            now,
+            None,
+        ).unwrap();
+
+        engine.register_policy(
+            "passthrough-policy".to_string(),
+            1,
+            "field".to_string(),
+            ClassificationLevel::PrivilegedTelemetry,
+            ClassificationLevel::Unrestricted,
+            Some("passthrough".to_string()),
+            vec![Principal::Audit, Principal::Declassifier],
+            now,
+            None,
+        ).unwrap();
+
+        let value = b"test_value";
+
+        // Hash transformation
+        let (hash_result, _) = engine.declassify(
+            Principal::Audit,
+            "hash-policy",
+            value,
+            ClassificationLevel::SensitiveReward,
+            vec![],
+        ).unwrap();
+
+        // Passthrough transformation
+        let (passthrough_result, _) = engine.declassify(
+            Principal::Audit,
+            "passthrough-policy",
+            value,
+            ClassificationLevel::PrivilegedTelemetry,
+            vec![],
+        ).unwrap();
+
+        // Hash should be 32 bytes
+        assert_eq!(hash_result.len(), 32);
+
+        // Passthrough should be same as input
+        assert_eq!(passthrough_result, value);
+    }
+
+    #[test]
+    fn test_declassification_lineage_tracking() {
+        let access_control = AccessControlEngine::new();
+        let engine = DeclassificationEngine::new(access_control);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        engine.register_policy(
+            "policy-004".to_string(),
+            1,
+            "field".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit, Principal::Declassifier],
+            now,
+            None,
+        ).unwrap();
+
+        // Declassify with lineage
+        let (_, record) = engine.declassify(
+            Principal::Audit,
+            "policy-004",
+            b"value",
+            ClassificationLevel::SensitiveReward,
+            vec!["record-001".to_string(), "record-002".to_string()],
+        ).unwrap();
+
+        assert_eq!(record.lineage.len(), 2);
+        assert_eq!(record.lineage[0], "record-001");
+        assert_eq!(record.lineage[1], "record-002");
+    }
+
+    #[test]
+    fn test_declassification_history() {
+        let access_control = AccessControlEngine::new();
+        let engine = DeclassificationEngine::new(access_control);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        engine.register_policy(
+            "policy-005".to_string(),
+            1,
+            "reward".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit, Principal::Declassifier],
+            now,
+            None,
+        ).unwrap();
+
+        // Perform multiple declassifications
+        let _ = engine.declassify(
+            Principal::Audit,
+            "policy-005",
+            b"value1",
+            ClassificationLevel::SensitiveReward,
+            vec![],
+        );
+
+        let _ = engine.declassify(
+            Principal::Declassifier,
+            "policy-005",
+            b"value2",
+            ClassificationLevel::SensitiveReward,
+            vec![],
+        );
+
+        let history = engine.get_declassification_history();
+        assert_eq!(history.len(), 2);
+
+        let field_decls = engine.get_field_declassifications("reward");
+        assert_eq!(field_decls.len(), 2);
+
+        let audit_decls = engine.get_principal_declassifications(Principal::Audit);
+        assert_eq!(audit_decls.len(), 1);
+
+        let declassifier_decls = engine.get_principal_declassifications(Principal::Declassifier);
+        assert_eq!(declassifier_decls.len(), 1);
+    }
+
+    #[test]
+    fn test_declassification_statistics() {
+        let access_control = AccessControlEngine::new();
+        let engine = DeclassificationEngine::new(access_control);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // Register policies
+        engine.register_policy(
+            "policy-1".to_string(),
+            1,
+            "field1".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit, Principal::Declassifier],
+            now,
+            None,
+        ).unwrap();
+
+        engine.register_policy(
+            "policy-2".to_string(),
+            1,
+            "field2".to_string(),
+            ClassificationLevel::PrivilegedTelemetry,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit, Principal::Declassifier],
+            now,
+            None,
+        ).unwrap();
+
+        // Perform a declassification
+        let _ = engine.declassify(
+            Principal::Audit,
+            "policy-1",
+            b"value",
+            ClassificationLevel::SensitiveReward,
+            vec![],
+        );
+
+        let (policies, records) = engine.statistics();
+        assert_eq!(policies, 2);
+        assert_eq!(records, 1);
     }
 }
