@@ -3,6 +3,7 @@
 
 pub mod policy;
 pub mod actuator;
+pub mod actuator_hardened;
 pub mod audit;
 pub mod declassifier;
 pub mod learner;
@@ -27,6 +28,7 @@ mod sprint3_certificate_tests;
 
 pub use policy::{PolicyPrincipal, PolicyState, GateADecision};
 pub use actuator::{ActuatorPrincipal, ActuatorState, CommandRequest, ExecutionResult, GateCDecision, GateIDecision};
+pub use actuator_hardened::{ActuatorConfig, HardenedExecutionContext, HardenedActuatorExecutor};
 pub use audit::{AuditPrincipal, AuditState, CorrelationResult, BreachDetection, ForensicAnalysis};
 pub use declassifier::{ClassificationLevel, ClassificationLabel, DeclassificationPolicy, DeclassificationRecord, ClassificationRegistry};
 pub use learner::{LearnerPrincipal, LearnerState, SecurityPattern, PolicyRecommendation, UsageAnalysis, MLReadiness};

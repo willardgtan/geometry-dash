@@ -21,6 +21,7 @@ pub use hsm::{HsmClient, AutoHsmClient, RealHsmClient, FilesystemHsmClient, Sign
 pub use principals::{
     PolicyPrincipal, PolicyState, GateADecision,
     ActuatorPrincipal, ActuatorState, CommandRequest, ExecutionResult, GateCDecision, GateIDecision,
+    ActuatorConfig, HardenedExecutionContext, HardenedActuatorExecutor,
     AuditPrincipal, AuditState, CorrelationResult, BreachDetection, ForensicAnalysis,
     ClassificationLevel, ClassificationLabel, DeclassificationPolicy, DeclassificationRecord, ClassificationRegistry,
     LearnerPrincipal, LearnerState, SecurityPattern, PolicyRecommendation, UsageAnalysis, MLReadiness,
