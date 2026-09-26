@@ -11,7 +11,10 @@ use std::sync::Mutex;
 use crate::types::Principal;
 
 pub mod schema;
+pub mod auth_trail;
+
 pub use schema::{SecurityEvent, EventType, Severity};
+pub use auth_trail::{AuthenticationEvent, AuthenticationEventType, AuthenticationAuditTrail, AuthenticationStatistics};
 
 /// SecurityLedger: Append-only JSON Lines log with hash chain
 pub struct SecurityLedger {
