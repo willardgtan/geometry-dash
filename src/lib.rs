@@ -19,7 +19,7 @@ pub use principals::{
     PolicyPrincipal, PolicyState, GateADecision,
     ActuatorPrincipal, ActuatorState, CommandRequest, ExecutionResult, GateCDecision, GateIDecision,
     AuditPrincipal, AuditState, CorrelationResult, BreachDetection, ForensicAnalysis,
-    DeclassifierPrincipal, DeclassifierState, ClassificationLevel, ClassificationDecision, DeclassificationRequest, DeclassificationDecision, ClassificationLabel,
+    ClassificationLevel, ClassificationLabel, DeclassificationPolicy, DeclassificationRecord, ClassificationRegistry,
     LearnerPrincipal, LearnerState, SecurityPattern, PolicyRecommendation, UsageAnalysis, MLReadiness,
     EvaluatorPrincipal, EvaluatorState, DecisionEvaluation, PolicyEffectiveness, ComplianceReport, DecisionQuality,
     SealerPrincipal, SealerState, ConsistencyCheck, ConsistencyViolation, ConsistencyAction, ConsistencyReport,

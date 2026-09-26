@@ -1,463 +1,352 @@
-// Declassifier Principal: Data Classification Management (Week 2 Task 2.4)
+// Declassifier Principal: Data Classification Management (Sprint 2 Task 2.1)
 // Responsible for managing data classifications and declassification policies
+// Implements SEC-C01 Privileged Data Boundary Enforcement
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use crate::types::{Principal, DataClass};
-use crate::security_ledger::{SecurityLedger, EventType, Severity};
-use crate::hsm::SigningKey;
+use crate::types::Principal;
+use crate::security_ledger::SecurityLedger;
+use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use uuid::Uuid;
 
-/// Declassifier principal state machine
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeclassifierState {
-    NotStarted,
-    Initializing,
-    Ready,
-    Classifying,    // Processing classification requests
-    Declassifying,  // Processing declassification requests
-    Enforcing,      // Enforcing access controls
-    Running,
-    Shutdown,
-    Failed,
-}
-
-/// Data classification level
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Data classification level for privileged data boundary enforcement
+/// Defines the sensitivity level of data and controls which principals can access it
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum ClassificationLevel {
-    TopSecret,      // Highest classification
-    Secret,
-    Confidential,
+    /// Unrestricted data readable by all principals (policy-safe)
+    Unrestricted,
+    /// Sensitive reward/outcome data (reward-sensitive principals only)
+    SensitiveReward,
+    /// Privileged telemetry (physics probes, internal metrics)
+    PrivilegedTelemetry,
+    /// Internal system state (sealer/audit only)
     Internal,
-    Public,         // Lowest classification
 }
 
 impl std::fmt::Display for ClassificationLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClassificationLevel::TopSecret => write!(f, "top-secret"),
-            ClassificationLevel::Secret => write!(f, "secret"),
-            ClassificationLevel::Confidential => write!(f, "confidential"),
+            ClassificationLevel::Unrestricted => write!(f, "unrestricted"),
+            ClassificationLevel::SensitiveReward => write!(f, "sensitive-reward"),
+            ClassificationLevel::PrivilegedTelemetry => write!(f, "privileged-telemetry"),
             ClassificationLevel::Internal => write!(f, "internal"),
-            ClassificationLevel::Public => write!(f, "public"),
         }
     }
 }
 
-/// Classification decision
-#[derive(Debug, Clone)]
-pub struct ClassificationDecision {
-    pub decision_id: String,
-    pub timestamp_ns: u64,
-    pub resource_id: String,
-    pub classification: ClassificationLevel,
-    pub requester: Principal,
-    pub approved: bool,
-    pub reason: String,
-}
-
-/// Declassification request
-#[derive(Debug, Clone)]
-pub struct DeclassificationRequest {
-    pub request_id: String,
-    pub timestamp_ns: u64,
-    pub resource_id: String,
-    pub current_classification: ClassificationLevel,
-    pub target_classification: ClassificationLevel,
-    pub justification: String,
-    pub requester: Principal,
-    pub metadata: HashMap<String, String>,
-}
-
-/// Declassification approval/denial
-#[derive(Debug, Clone)]
-pub struct DeclassificationDecision {
-    pub decision_id: String,
-    pub timestamp_ns: u64,
-    pub request_id: String,
-    pub approved: bool,
-    pub authorized_by: String,
-    pub reason: String,
-}
-
-/// Classification label
-#[derive(Debug, Clone)]
+/// Classification label applied to a specific field or value
+/// Binds a classification level to a named data field for access control enforcement
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassificationLabel {
-    pub label_id: String,
-    pub resource_id: String,
-    pub classification: ClassificationLevel,
-    pub created_at: u64,
-    pub created_by: String,
-    pub expires_at: Option<u64>,
-    pub metadata: HashMap<String, String>,
+    /// Field or resource name being classified
+    pub field_name: String,
+    /// Classification level assigned to this field
+    pub level: ClassificationLevel,
+    /// Principal that applied this classification
+    pub applied_by: Principal,
+    /// Timestamp when classification was applied (nanoseconds since UNIX_EPOCH)
+    pub applied_timestamp_ns: u64,
+    /// Justification for this classification
+    pub justification: String,
 }
 
-/// Declassifier principal context
-pub struct DeclassifierPrincipal {
-    /// Unique ID for this Declassifier instance
-    principal_id: String,
+impl ClassificationLabel {
+    /// Create a new classification label
+    pub fn new(
+        field_name: String,
+        level: ClassificationLevel,
+        applied_by: Principal,
+        applied_timestamp_ns: u64,
+        justification: String,
+    ) -> Self {
+        ClassificationLabel {
+            field_name,
+            level,
+            applied_by,
+            applied_timestamp_ns,
+            justification,
+        }
+    }
+}
 
-    /// Current state
-    state: Arc<Mutex<DeclassifierState>>,
+/// Versioned declassification policy that controls reduction of classification
+/// Requires approval chain and tracks effective/expiry dates for enforcement
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeclassificationPolicy {
+    /// Unique policy identifier (UUID)
+    pub policy_id: String,
+    /// Version number for tracking policy evolution
+    pub version: u32,
+    /// Field name this policy applies to
+    pub field_name: String,
+    /// Minimum classification that can be reduced
+    pub source_level: ClassificationLevel,
+    /// Target classification after declassification
+    pub target_level: ClassificationLevel,
+    /// Optional transformation function (e.g., "hash_sha256", "aggregate_mean")
+    pub transformation: Option<String>,
+    /// Principals that approved this policy (requires at least 2)
+    pub approved_by: Vec<Principal>,
+    /// Timestamp when policy becomes effective (nanoseconds since UNIX_EPOCH)
+    pub effective_timestamp_ns: u64,
+    /// Optional timestamp when policy expires (None = no expiration)
+    pub expires_timestamp_ns: Option<u64>,
+}
 
-    /// UID/GID for process isolation
-    uid: u32,
-    gid: u32,
+impl DeclassificationPolicy {
+    /// Create a new declassification policy
+    pub fn new(
+        policy_id: String,
+        version: u32,
+        field_name: String,
+        source_level: ClassificationLevel,
+        target_level: ClassificationLevel,
+        transformation: Option<String>,
+        approved_by: Vec<Principal>,
+        effective_timestamp_ns: u64,
+        expires_timestamp_ns: Option<u64>,
+    ) -> Self {
+        DeclassificationPolicy {
+            policy_id,
+            version,
+            field_name,
+            source_level,
+            target_level,
+            transformation,
+            approved_by,
+            effective_timestamp_ns,
+            expires_timestamp_ns,
+        }
+    }
 
-    /// Signing key for message authentication
-    signing_key: Arc<Mutex<Option<SigningKey>>>,
+    /// Check if this policy is currently valid (effective and not expired)
+    pub fn is_valid(&self, current_time_ns: u64) -> bool {
+        current_time_ns >= self.effective_timestamp_ns &&
+            (self.expires_timestamp_ns.is_none() ||
+             current_time_ns < self.expires_timestamp_ns.unwrap())
+    }
 
-    /// Security ledger for audit logging
-    ledger: Arc<SecurityLedger>,
+    /// Check if principal is in approval chain
+    pub fn is_approved_by(&self, principal: Principal) -> bool {
+        self.approved_by.contains(&principal)
+    }
+}
 
-    /// Resource classification labels
+/// Audit record documenting each declassification operation
+/// Creates immutable trail of all data reductions with lineage tracking
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeclassificationRecord {
+    /// Unique record identifier (UUID)
+    pub record_id: String,
+    /// Field name that was declassified
+    pub field_name: String,
+    /// SHA-256 hash of original (classified) value
+    pub original_value_hash: [u8; 32],
+    /// SHA-256 hash of declassified value
+    pub declassified_value_hash: [u8; 32],
+    /// Policy ID applied for this declassification
+    pub policy_id: String,
+    /// Principal that performed the declassification
+    pub applied_by: Principal,
+    /// Timestamp when declassification occurred (nanoseconds since UNIX_EPOCH)
+    pub timestamp_ns: u64,
+    /// Lineage chain showing parent records (for multi-level transformations)
+    pub lineage: Vec<String>,
+}
+
+impl DeclassificationRecord {
+    /// Create a new declassification record
+    pub fn new(
+        record_id: String,
+        field_name: String,
+        original_value_hash: [u8; 32],
+        declassified_value_hash: [u8; 32],
+        policy_id: String,
+        applied_by: Principal,
+        timestamp_ns: u64,
+        lineage: Vec<String>,
+    ) -> Self {
+        DeclassificationRecord {
+            record_id,
+            field_name,
+            original_value_hash,
+            declassified_value_hash,
+            policy_id,
+            applied_by,
+            timestamp_ns,
+            lineage,
+        }
+    }
+}
+
+/// Classification system registry
+/// Manages all active classification labels, declassification policies, and audit records
+pub struct ClassificationRegistry {
+    /// Field name -> active classification label
     labels: Arc<Mutex<HashMap<String, ClassificationLabel>>>,
 
-    /// Declassification requests history
-    requests: Arc<Mutex<VecDeque<DeclassificationRequest>>>,
+    /// Policy ID -> versioned declassification policy
+    policies: Arc<Mutex<HashMap<String, DeclassificationPolicy>>>,
 
-    /// Classification decisions history
-    classification_decisions: Arc<Mutex<Vec<ClassificationDecision>>>,
+    /// Immutable audit ledger of declassifications performed
+    declassification_records: Arc<Mutex<Vec<DeclassificationRecord>>>,
 
-    /// Declassification decisions history
-    declassification_decisions: Arc<Mutex<Vec<DeclassificationDecision>>>,
-
-    /// Access control policies
-    access_policies: Arc<Mutex<HashMap<String, Vec<String>>>>,
-
-    /// Statistics
-    resources_classified: Arc<Mutex<u64>>,
-    declassifications_requested: Arc<Mutex<u64>>,
-    declassifications_approved: Arc<Mutex<u64>>,
-    declassifications_denied: Arc<Mutex<u64>>,
+    /// Security ledger reference for integration
+    ledger: Arc<SecurityLedger>,
 }
 
-impl DeclassifierPrincipal {
-    /// Create new Declassifier principal
-    pub fn new(
-        principal_id: String,
-        uid: u32,
-        gid: u32,
-        ledger: Arc<SecurityLedger>,
-    ) -> Self {
-        DeclassifierPrincipal {
-            principal_id,
-            state: Arc::new(Mutex::new(DeclassifierState::NotStarted)),
-            uid,
-            gid,
-            signing_key: Arc::new(Mutex::new(None)),
-            ledger,
+impl ClassificationRegistry {
+    /// Create a new classification registry
+    pub fn new(ledger: Arc<SecurityLedger>) -> Self {
+        ClassificationRegistry {
             labels: Arc::new(Mutex::new(HashMap::new())),
-            requests: Arc::new(Mutex::new(VecDeque::new())),
-            classification_decisions: Arc::new(Mutex::new(Vec::new())),
-            declassification_decisions: Arc::new(Mutex::new(Vec::new())),
-            access_policies: Arc::new(Mutex::new(HashMap::new())),
-            resources_classified: Arc::new(Mutex::new(0)),
-            declassifications_requested: Arc::new(Mutex::new(0)),
-            declassifications_approved: Arc::new(Mutex::new(0)),
-            declassifications_denied: Arc::new(Mutex::new(0)),
+            policies: Arc::new(Mutex::new(HashMap::new())),
+            declassification_records: Arc::new(Mutex::new(Vec::new())),
+            ledger,
         }
     }
 
-    /// Initialize Declassifier principal
-    pub fn initialize(&self, signing_key: SigningKey) -> std::io::Result<()> {
-        self.set_state(DeclassifierState::Initializing);
-
-        let mut key = self.signing_key.lock().unwrap();
-        *key = Some(signing_key);
-
-        // Initialize default access policies
-        {
-            let mut policies = self.access_policies.lock().unwrap();
-            // Supervisor can access all classifications
-            policies.insert("supervisor".to_string(), vec![
-                "top-secret".to_string(),
-                "secret".to_string(),
-                "confidential".to_string(),
-                "internal".to_string(),
-                "public".to_string(),
-            ]);
-            // Audit can access all for forensics
-            policies.insert("audit".to_string(), vec![
-                "top-secret".to_string(),
-                "secret".to_string(),
-                "confidential".to_string(),
-                "internal".to_string(),
-                "public".to_string(),
-            ]);
-            // Policy can access up to secret
-            policies.insert("policy".to_string(), vec![
-                "secret".to_string(),
-                "confidential".to_string(),
-                "internal".to_string(),
-                "public".to_string(),
-            ]);
-            // Actuator can access up to confidential
-            policies.insert("actuator".to_string(), vec![
-                "confidential".to_string(),
-                "internal".to_string(),
-                "public".to_string(),
-            ]);
-            // Others can access only public
-            policies.insert("default".to_string(), vec![
-                "public".to_string(),
-            ]);
-        }
-
-        self.set_state(DeclassifierState::Ready);
-        Ok(())
-    }
-
-    /// Set state
-    fn set_state(&self, new_state: DeclassifierState) {
-        let mut state = self.state.lock().unwrap();
-        *state = new_state;
-    }
-
-    /// Get current state
-    pub fn state(&self) -> DeclassifierState {
-        *self.state.lock().unwrap()
-    }
-
-    /// Get principal ID
-    pub fn principal_id(&self) -> &str {
-        &self.principal_id
-    }
-
-    /// Classify a resource
-    pub fn classify_resource(
+    /// Apply a classification label to a field
+    pub fn apply_classification(
         &self,
-        resource_id: String,
-        classification: ClassificationLevel,
-        requester: Principal,
-    ) -> std::io::Result<ClassificationDecision> {
-        self.set_state(DeclassifierState::Classifying);
-
-        // Check if requester is authorized to classify
-        let authorized = matches!(requester, Principal::Supervisor | Principal::Policy | Principal::Declassifier);
-
-        let decision = ClassificationDecision {
-            decision_id: Uuid::new_v4().to_string(),
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-            resource_id: resource_id.clone(),
-            classification: classification.clone(),
-            requester,
-            approved: authorized,
-            reason: if authorized {
-                "Authorized principal".to_string()
-            } else {
-                "Unauthorized requester".to_string()
-            },
-        };
-
-        if authorized {
-            // Create label
-            let label = ClassificationLabel {
-                label_id: Uuid::new_v4().to_string(),
-                resource_id,
-                classification,
-                created_at: decision.timestamp_ns,
-                created_by: format!("{:?}", requester),
-                expires_at: None,
-                metadata: HashMap::new(),
-            };
-
-            // Store label
-            {
-                let mut labels = self.labels.lock().unwrap();
-                labels.insert(label.resource_id.clone(), label);
-
-                let mut count = self.resources_classified.lock().unwrap();
-                *count += 1;
-            }
-        }
-
-        // Record decision
-        {
-            let mut decisions = self.classification_decisions.lock().unwrap();
-            decisions.push(decision.clone());
-        }
-
-        self.set_state(DeclassifierState::Ready);
-        Ok(decision)
-    }
-
-    /// Request declassification
-    pub fn request_declassification(
-        &self,
-        resource_id: String,
-        current_classification: ClassificationLevel,
-        target_classification: ClassificationLevel,
+        field_name: String,
+        level: ClassificationLevel,
+        applied_by: Principal,
+        applied_timestamp_ns: u64,
         justification: String,
-        requester: Principal,
-    ) -> std::io::Result<DeclassificationRequest> {
-        self.set_state(DeclassifierState::Declassifying);
-
-        let request = DeclassificationRequest {
-            request_id: Uuid::new_v4().to_string(),
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-            resource_id,
-            current_classification,
-            target_classification,
+    ) -> ClassificationLabel {
+        let label = ClassificationLabel::new(
+            field_name.clone(),
+            level,
+            applied_by,
+            applied_timestamp_ns,
             justification,
-            requester,
-            metadata: HashMap::new(),
-        };
-
-        // Queue request
-        {
-            let mut reqs = self.requests.lock().unwrap();
-            reqs.push_back(request.clone());
-
-            let mut count = self.declassifications_requested.lock().unwrap();
-            *count += 1;
-        }
-
-        self.set_state(DeclassifierState::Ready);
-        Ok(request)
-    }
-
-    /// Approve declassification
-    pub fn approve_declassification(
-        &self,
-        request_id: String,
-        authorized_by: String,
-    ) -> std::io::Result<DeclassificationDecision> {
-        let decision = DeclassificationDecision {
-            decision_id: Uuid::new_v4().to_string(),
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-            request_id,
-            approved: true,
-            authorized_by,
-            reason: "Declassification approved".to_string(),
-        };
+        );
 
         {
-            let mut decisions = self.declassification_decisions.lock().unwrap();
-            decisions.push(decision.clone());
-
-            let mut count = self.declassifications_approved.lock().unwrap();
-            *count += 1;
+            let mut labels = self.labels.lock().unwrap();
+            labels.insert(field_name, label.clone());
         }
 
-        Ok(decision)
+        label
     }
 
-    /// Deny declassification
-    pub fn deny_declassification(
-        &self,
-        request_id: String,
-        authorized_by: String,
-        reason: String,
-    ) -> std::io::Result<DeclassificationDecision> {
-        let decision = DeclassificationDecision {
-            decision_id: Uuid::new_v4().to_string(),
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-            request_id,
-            approved: false,
-            authorized_by,
-            reason,
-        };
-
-        {
-            let mut decisions = self.declassification_decisions.lock().unwrap();
-            decisions.push(decision.clone());
-
-            let mut count = self.declassifications_denied.lock().unwrap();
-            *count += 1;
-        }
-
-        Ok(decision)
+    /// Retrieve a classification label for a field
+    pub fn get_label(&self, field_name: &str) -> Option<ClassificationLabel> {
+        self.labels.lock().unwrap().get(field_name).cloned()
     }
 
-    /// Check access for principal to resource
-    pub fn check_access(&self, principal: &Principal, classification: &ClassificationLevel) -> bool {
-        let policies = self.access_policies.lock().unwrap();
-
-        let principal_name = match principal {
-            Principal::Supervisor => "supervisor",
-            Principal::Policy => "policy",
-            Principal::Actuator => "actuator",
-            Principal::Audit => "audit",
-            Principal::Declassifier => "declassifier",
-            _ => "default",
-        };
-
-        let allowed_classes = policies.get(principal_name)
-            .or_else(|| policies.get("default"))
-            .unwrap_or(&vec![]);
-
-        allowed_classes.contains(&classification.to_string())
-    }
-
-    /// Get classification label for resource
-    pub fn get_label(&self, resource_id: &str) -> Option<ClassificationLabel> {
-        self.labels.lock().unwrap().get(resource_id).cloned()
-    }
-
-    /// Get all labels
+    /// List all active classification labels
     pub fn list_labels(&self) -> Vec<ClassificationLabel> {
         self.labels.lock().unwrap().values().cloned().collect()
     }
 
-    /// Get declassification history
-    pub fn declassification_history(&self) -> Vec<DeclassificationDecision> {
-        self.declassification_decisions.lock().unwrap().clone()
+    /// Register a new declassification policy
+    pub fn register_policy(
+        &self,
+        policy_id: String,
+        version: u32,
+        field_name: String,
+        source_level: ClassificationLevel,
+        target_level: ClassificationLevel,
+        transformation: Option<String>,
+        approved_by: Vec<Principal>,
+        effective_timestamp_ns: u64,
+        expires_timestamp_ns: Option<u64>,
+    ) -> Result<DeclassificationPolicy, String> {
+        // Validate policy
+        if approved_by.len() < 2 {
+            return Err("Policy requires at least 2 approvals".to_string());
+        }
+
+        if source_level as u8 <= target_level as u8 {
+            return Err("Source level must be more restrictive than target level".to_string());
+        }
+
+        let policy = DeclassificationPolicy::new(
+            policy_id.clone(),
+            version,
+            field_name,
+            source_level,
+            target_level,
+            transformation,
+            approved_by,
+            effective_timestamp_ns,
+            expires_timestamp_ns,
+        );
+
+        {
+            let mut policies = self.policies.lock().unwrap();
+            policies.insert(policy_id, policy.clone());
+        }
+
+        Ok(policy)
     }
 
-    /// Get classification decisions history
-    pub fn classification_history(&self) -> Vec<ClassificationDecision> {
-        self.classification_decisions.lock().unwrap().clone()
+    /// Retrieve a declassification policy
+    pub fn get_policy(&self, policy_id: &str) -> Option<DeclassificationPolicy> {
+        self.policies.lock().unwrap().get(policy_id).cloned()
     }
 
-    /// Get statistics
-    pub fn statistics(&self) -> (u64, u64, u64, u64) {
+    /// List all declassification policies
+    pub fn list_policies(&self) -> Vec<DeclassificationPolicy> {
+        self.policies.lock().unwrap().values().cloned().collect()
+    }
+
+    /// Create a declassification record (audit trail)
+    pub fn record_declassification(
+        &self,
+        field_name: String,
+        original_value_hash: [u8; 32],
+        declassified_value_hash: [u8; 32],
+        policy_id: String,
+        applied_by: Principal,
+        timestamp_ns: u64,
+        lineage: Vec<String>,
+    ) -> DeclassificationRecord {
+        let record = DeclassificationRecord::new(
+            Uuid::new_v4().to_string(),
+            field_name,
+            original_value_hash,
+            declassified_value_hash,
+            policy_id,
+            applied_by,
+            timestamp_ns,
+            lineage,
+        );
+
+        {
+            let mut records = self.declassification_records.lock().unwrap();
+            records.push(record.clone());
+        }
+
+        record
+    }
+
+    /// Retrieve declassification history
+    pub fn get_declassification_history(&self) -> Vec<DeclassificationRecord> {
+        self.declassification_records.lock().unwrap().clone()
+    }
+
+    /// Get declassification records for a specific field
+    pub fn get_field_declassifications(&self, field_name: &str) -> Vec<DeclassificationRecord> {
+        self.declassification_records
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.field_name == field_name)
+            .cloned()
+            .collect()
+    }
+
+    /// Get statistics about classification and declassification
+    pub fn statistics(&self) -> (usize, usize, usize) {
         (
-            *self.resources_classified.lock().unwrap(),
-            *self.declassifications_requested.lock().unwrap(),
-            *self.declassifications_approved.lock().unwrap(),
-            *self.declassifications_denied.lock().unwrap(),
-        )
-    }
-
-    /// Generate classification report
-    pub fn report(&self) -> String {
-        let (classified, requested, approved, denied) = self.statistics();
-
-        format!(
-            "Declassifier Principal {} Report\n\
-            Resources Classified: {}\n\
-            Declassifications Requested: {}\n\
-            Declassifications Approved: {}\n\
-            Declassifications Denied: {}\n\
-            Labels Active: {}\n\
-            State: {:?}",
-            self.principal_id,
-            classified,
-            requested,
-            approved,
-            denied,
             self.labels.lock().unwrap().len(),
-            self.state()
+            self.policies.lock().unwrap().len(),
+            self.declassification_records.lock().unwrap().len(),
         )
-    }
-
-    /// Shutdown declassifier principal
-    pub fn shutdown(&self) -> std::io::Result<()> {
-        self.set_state(DeclassifierState::Shutdown);
-        Ok(())
     }
 }
 
@@ -466,131 +355,323 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_declassifier_initialization() {
-        let temp = TempDir::new().unwrap();
-        let ledger = Arc::new(
-            SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
-        );
-
-        let declassifier = DeclassifierPrincipal::new(
-            "declassifier-001".to_string(),
-            1004,
-            1004,
-            ledger,
-        );
-
-        assert_eq!(declassifier.state(), DeclassifierState::NotStarted);
-        assert_eq!(declassifier.principal_id(), "declassifier-001");
+    /// Helper function to compute SHA-256 hash
+    fn compute_hash(data: &[u8]) -> [u8; 32] {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(data);
+        hasher.finalize().into()
     }
 
     #[test]
-    fn test_classify_resource() {
-        let temp = TempDir::new().unwrap();
-        let ledger = Arc::new(
-            SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
-        );
+    fn test_classification_level_types() {
+        // Verify all 4 classification levels exist and are distinct
+        assert_eq!(ClassificationLevel::Unrestricted.to_string(), "unrestricted");
+        assert_eq!(ClassificationLevel::SensitiveReward.to_string(), "sensitive-reward");
+        assert_eq!(ClassificationLevel::PrivilegedTelemetry.to_string(), "privileged-telemetry");
+        assert_eq!(ClassificationLevel::Internal.to_string(), "internal");
 
-        let declassifier = DeclassifierPrincipal::new(
-            "declassifier-002".to_string(),
-            1004,
-            1004,
-            ledger,
-        );
-
-        let decision = declassifier.classify_resource(
-            "resource-001".to_string(),
-            ClassificationLevel::Secret,
-            Principal::Supervisor,
-        ).unwrap();
-
-        assert!(decision.approved);
-        let (classified, _, _, _) = declassifier.statistics();
-        assert_eq!(classified, 1);
+        // Verify they're all different
+        assert_ne!(ClassificationLevel::Unrestricted, ClassificationLevel::SensitiveReward);
+        assert_ne!(ClassificationLevel::SensitiveReward, ClassificationLevel::PrivilegedTelemetry);
+        assert_ne!(ClassificationLevel::PrivilegedTelemetry, ClassificationLevel::Internal);
     }
 
     #[test]
-    fn test_declassification_request() {
-        let temp = TempDir::new().unwrap();
-        let ledger = Arc::new(
-            SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
+    fn test_classification_label_creation() {
+        let label = ClassificationLabel::new(
+            "physics_probe".to_string(),
+            ClassificationLevel::PrivilegedTelemetry,
+            Principal::Developer,
+            1000,
+            "Contains sensitive physics measurements".to_string(),
         );
 
-        let declassifier = DeclassifierPrincipal::new(
-            "declassifier-003".to_string(),
-            1004,
-            1004,
-            ledger,
-        );
-
-        let request = declassifier.request_declassification(
-            "resource-001".to_string(),
-            ClassificationLevel::Secret,
-            ClassificationLevel::Confidential,
-            "Needs access".to_string(),
-            Principal::Policy,
-        ).unwrap();
-
-        assert!(!request.request_id.is_empty());
-        let (_, requested, _, _) = declassifier.statistics();
-        assert_eq!(requested, 1);
+        assert_eq!(label.field_name, "physics_probe");
+        assert_eq!(label.level, ClassificationLevel::PrivilegedTelemetry);
+        assert_eq!(label.applied_by, Principal::Developer);
+        assert_eq!(label.applied_timestamp_ns, 1000);
+        assert_eq!(label.justification, "Contains sensitive physics measurements");
     }
 
     #[test]
-    fn test_approve_declassification() {
-        let temp = TempDir::new().unwrap();
-        let ledger = Arc::new(
-            SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
+    fn test_declassification_policy_validity() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        // Create a valid policy
+        let policy = DeclassificationPolicy::new(
+            "policy-001".to_string(),
+            1,
+            "reward_value".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            Some("hash_sha256".to_string()),
+            vec![Principal::Audit, Principal::Policy],
+            now - 1000,  // Effective in past
+            Some(now + 1000),  // Expires in future
         );
 
-        let declassifier = DeclassifierPrincipal::new(
-            "declassifier-004".to_string(),
-            1004,
-            1004,
-            ledger,
-        );
+        // Policy should be valid at current time
+        assert!(policy.is_valid(now));
 
-        let request = declassifier.request_declassification(
-            "resource-001".to_string(),
-            ClassificationLevel::Secret,
-            ClassificationLevel::Confidential,
-            "Needs access".to_string(),
-            Principal::Policy,
-        ).unwrap();
+        // Policy should not be valid before effective time
+        assert!(!policy.is_valid(now - 2000));
 
-        let decision = declassifier.approve_declassification(
-            request.request_id,
-            "supervisor".to_string(),
-        ).unwrap();
-
-        assert!(decision.approved);
-        let (_, _, approved, _) = declassifier.statistics();
-        assert_eq!(approved, 1);
+        // Policy should not be valid after expiration
+        assert!(!policy.is_valid(now + 2000));
     }
 
     #[test]
-    fn test_check_access() {
+    fn test_declassification_policy_approval_chain() {
+        let policy = DeclassificationPolicy::new(
+            "policy-002".to_string(),
+            1,
+            "field".to_string(),
+            ClassificationLevel::PrivilegedTelemetry,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit, Principal::Sealer],
+            1000,
+            None,
+        );
+
+        assert!(policy.is_approved_by(Principal::Audit));
+        assert!(policy.is_approved_by(Principal::Sealer));
+        assert!(!policy.is_approved_by(Principal::Policy));
+    }
+
+    #[test]
+    fn test_declassification_record_creation() {
+        let original = b"sensitive_value";
+        let declassified = b"hashed_value";
+
+        let record = DeclassificationRecord::new(
+            "record-001".to_string(),
+            "field_name".to_string(),
+            compute_hash(original),
+            compute_hash(declassified),
+            "policy-001".to_string(),
+            Principal::Audit,
+            1000,
+            vec![],
+        );
+
+        assert_eq!(record.record_id, "record-001");
+        assert_eq!(record.field_name, "field_name");
+        assert_eq!(record.policy_id, "policy-001");
+        assert_eq!(record.applied_by, Principal::Audit);
+        assert_eq!(record.timestamp_ns, 1000);
+        assert!(record.lineage.is_empty());
+    }
+
+    #[test]
+    fn test_declassification_record_lineage() {
+        let record = DeclassificationRecord::new(
+            "record-002".to_string(),
+            "field".to_string(),
+            compute_hash(b"value1"),
+            compute_hash(b"value2"),
+            "policy-001".to_string(),
+            Principal::Declassifier,
+            1000,
+            vec!["record-001".to_string(), "record-000".to_string()],
+        );
+
+        assert_eq!(record.lineage.len(), 2);
+        assert_eq!(record.lineage[0], "record-001");
+        assert_eq!(record.lineage[1], "record-000");
+    }
+
+    #[test]
+    fn test_classification_registry_apply_label() {
         let temp = TempDir::new().unwrap();
         let ledger = Arc::new(
             SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
         );
+        let registry = ClassificationRegistry::new(ledger);
 
-        let declassifier = DeclassifierPrincipal::new(
-            "declassifier-005".to_string(),
-            1004,
-            1004,
-            ledger,
+        let label = registry.apply_classification(
+            "physics_data".to_string(),
+            ClassificationLevel::PrivilegedTelemetry,
+            Principal::Developer,
+            1000,
+            "Physics probe output".to_string(),
         );
 
-        // Supervisor can access all
-        assert!(declassifier.check_access(&Principal::Supervisor, &ClassificationLevel::TopSecret));
+        assert_eq!(label.field_name, "physics_data");
+        assert_eq!(label.level, ClassificationLevel::PrivilegedTelemetry);
 
-        // Policy can access up to secret
-        assert!(declassifier.check_access(&Principal::Policy, &ClassificationLevel::Secret));
-        assert!(!declassifier.check_access(&Principal::Policy, &ClassificationLevel::TopSecret));
+        // Verify retrieval
+        let retrieved = registry.get_label("physics_data").unwrap();
+        assert_eq!(retrieved.field_name, "physics_data");
+    }
 
-        // Others can access only public
-        assert!(!declassifier.check_access(&Principal::Learner, &ClassificationLevel::Confidential));
-        assert!(declassifier.check_access(&Principal::Learner, &ClassificationLevel::Public));
+    #[test]
+    fn test_classification_registry_policy_registration() {
+        let temp = TempDir::new().unwrap();
+        let ledger = Arc::new(
+            SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
+        );
+        let registry = ClassificationRegistry::new(ledger);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        // Register a valid policy
+        let result = registry.register_policy(
+            "policy-003".to_string(),
+            1,
+            "reward".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            Some("aggregate_mean".to_string()),
+            vec![Principal::Audit, Principal::Policy],
+            now,
+            None,
+        );
+
+        assert!(result.is_ok());
+        let policy = result.unwrap();
+        assert_eq!(policy.policy_id, "policy-003");
+        assert_eq!(policy.version, 1);
+
+        // Verify retrieval
+        let retrieved = registry.get_policy("policy-003").unwrap();
+        assert_eq!(retrieved.field_name, "reward");
+    }
+
+    #[test]
+    fn test_classification_registry_policy_validation() {
+        let temp = TempDir::new().unwrap();
+        let ledger = Arc::new(
+            SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
+        );
+        let registry = ClassificationRegistry::new(ledger);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        // Test: require at least 2 approvals
+        let result = registry.register_policy(
+            "policy-bad-1".to_string(),
+            1,
+            "field".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit],  // Only 1 approval
+            now,
+            None,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("2 approvals"));
+
+        // Test: source must be more restrictive than target
+        let result = registry.register_policy(
+            "policy-bad-2".to_string(),
+            1,
+            "field".to_string(),
+            ClassificationLevel::Unrestricted,  // Less restrictive
+            ClassificationLevel::Internal,      // More restrictive
+            None,
+            vec![Principal::Audit, Principal::Policy],
+            now,
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_classification_registry_record_declassification() {
+        let temp = TempDir::new().unwrap();
+        let ledger = Arc::new(
+            SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
+        );
+        let registry = ClassificationRegistry::new(ledger);
+
+        let original = b"sensitive_reward_value";
+        let declassified = b"hashed_reward";
+
+        let record = registry.record_declassification(
+            "reward".to_string(),
+            compute_hash(original),
+            compute_hash(declassified),
+            "policy-001".to_string(),
+            Principal::Declassifier,
+            1000,
+            vec![],
+        );
+
+        assert_eq!(record.field_name, "reward");
+        assert_eq!(record.policy_id, "policy-001");
+
+        // Verify history
+        let history = registry.get_declassification_history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].record_id, record.record_id);
+    }
+
+    #[test]
+    fn test_classification_registry_statistics() {
+        let temp = TempDir::new().unwrap();
+        let ledger = Arc::new(
+            SecurityLedger::open(temp.path().to_str().unwrap()).unwrap()
+        );
+        let registry = ClassificationRegistry::new(ledger);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        // Add some classifications and records
+        registry.apply_classification(
+            "field1".to_string(),
+            ClassificationLevel::PrivilegedTelemetry,
+            Principal::Developer,
+            now,
+            "Test".to_string(),
+        );
+
+        registry.apply_classification(
+            "field2".to_string(),
+            ClassificationLevel::SensitiveReward,
+            Principal::Developer,
+            now,
+            "Test".to_string(),
+        );
+
+        let _ = registry.register_policy(
+            "policy-1".to_string(),
+            1,
+            "field1".to_string(),
+            ClassificationLevel::PrivilegedTelemetry,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit, Principal::Policy],
+            now,
+            None,
+        );
+
+        registry.record_declassification(
+            "field1".to_string(),
+            compute_hash(b"value1"),
+            compute_hash(b"value2"),
+            "policy-1".to_string(),
+            Principal::Audit,
+            now,
+            vec![],
+        );
+
+        let (labels, policies, records) = registry.statistics();
+        assert_eq!(labels, 2);
+        assert_eq!(policies, 1);
+        assert_eq!(records, 1);
     }
 }

@@ -17,7 +17,7 @@ mod integration_tests;
 pub use policy::{PolicyPrincipal, PolicyState, GateADecision};
 pub use actuator::{ActuatorPrincipal, ActuatorState, CommandRequest, ExecutionResult, GateCDecision, GateIDecision};
 pub use audit::{AuditPrincipal, AuditState, CorrelationResult, BreachDetection, ForensicAnalysis};
-pub use declassifier::{DeclassifierPrincipal, DeclassifierState, ClassificationLevel, ClassificationDecision, DeclassificationRequest, DeclassificationDecision, ClassificationLabel};
+pub use declassifier::{ClassificationLevel, ClassificationLabel, DeclassificationPolicy, DeclassificationRecord, ClassificationRegistry};
 pub use learner::{LearnerPrincipal, LearnerState, SecurityPattern, PolicyRecommendation, UsageAnalysis, MLReadiness};
 pub use evaluator::{EvaluatorPrincipal, EvaluatorState, DecisionEvaluation, PolicyEffectiveness, ComplianceReport, DecisionQuality};
 pub use sealer::{SealerPrincipal, SealerState, ConsistencyCheck, ConsistencyViolation, ConsistencyAction, ConsistencyReport};
