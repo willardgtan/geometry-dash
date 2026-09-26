@@ -350,6 +350,288 @@ impl ClassificationRegistry {
     }
 }
 
+/// Access control log entry documenting an access attempt
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessAttempt {
+    /// Principal attempting access
+    pub principal: Principal,
+    /// Resource identifier being accessed
+    pub resource: String,
+    /// Classification level of the resource
+    pub level: ClassificationLevel,
+    /// Whether the access was allowed
+    pub allowed: bool,
+    /// Timestamp of access attempt (nanoseconds since UNIX_EPOCH)
+    pub timestamp_ns: u64,
+    /// Reason for allow/deny decision
+    pub reason: String,
+}
+
+/// Access control engine enforcing data boundary policies
+/// Implements principal-based access control with classification-level enforcement
+pub struct AccessControlEngine {
+    /// Principal -> allowed classification levels (clearance)
+    principal_clearances: Arc<Mutex<HashMap<Principal, Vec<ClassificationLevel>>>>,
+
+    /// Field name -> authorized declassifiers
+    declassifier_roles: Arc<Mutex<HashMap<String, Vec<Principal>>>>,
+
+    /// Audit log of all access attempts (allow + deny)
+    access_log: Arc<Mutex<Vec<AccessAttempt>>>,
+}
+
+impl AccessControlEngine {
+    /// Create a new access control engine with default clearances
+    pub fn new() -> Self {
+        let mut clearances = HashMap::new();
+
+        // Unrestricted: all principals can read
+        for principal in [
+            Principal::Policy,
+            Principal::Learner,
+            Principal::Evaluator,
+            Principal::Actuator,
+            Principal::Audit,
+            Principal::Declassifier,
+            Principal::Sealer,
+            Principal::Developer,
+        ] {
+            clearances.insert(principal, vec![ClassificationLevel::Unrestricted]);
+        }
+
+        // Policy safe: can read only Unrestricted
+        clearances.insert(Principal::Policy, vec![ClassificationLevel::Unrestricted]);
+        clearances.insert(Principal::Learner, vec![ClassificationLevel::Unrestricted]);
+
+        // Audit: can read all levels
+        clearances.insert(
+            Principal::Audit,
+            vec![
+                ClassificationLevel::Unrestricted,
+                ClassificationLevel::SensitiveReward,
+                ClassificationLevel::PrivilegedTelemetry,
+                ClassificationLevel::Internal,
+            ],
+        );
+
+        // Sealer: can read all levels
+        clearances.insert(
+            Principal::Sealer,
+            vec![
+                ClassificationLevel::Unrestricted,
+                ClassificationLevel::SensitiveReward,
+                ClassificationLevel::PrivilegedTelemetry,
+                ClassificationLevel::Internal,
+            ],
+        );
+
+        // Declassifier: can read SensitiveReward and PrivilegedTelemetry for declassification
+        clearances.insert(
+            Principal::Declassifier,
+            vec![
+                ClassificationLevel::Unrestricted,
+                ClassificationLevel::SensitiveReward,
+                ClassificationLevel::PrivilegedTelemetry,
+            ],
+        );
+
+        // Developer: can read all for testing/debugging
+        clearances.insert(
+            Principal::Developer,
+            vec![
+                ClassificationLevel::Unrestricted,
+                ClassificationLevel::SensitiveReward,
+                ClassificationLevel::PrivilegedTelemetry,
+                ClassificationLevel::Internal,
+            ],
+        );
+
+        AccessControlEngine {
+            principal_clearances: Arc::new(Mutex::new(clearances)),
+            declassifier_roles: Arc::new(Mutex::new(HashMap::new())),
+            access_log: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Check if a principal can read a classification level
+    pub fn can_read(&self, principal: Principal, level: ClassificationLevel) -> bool {
+        let clearances = self.principal_clearances.lock().unwrap();
+        clearances
+            .get(&principal)
+            .map(|levels| levels.contains(&level))
+            .unwrap_or(false)
+    }
+
+    /// Check if a principal can apply a declassification policy
+    pub fn can_declassify(
+        &self,
+        principal: Principal,
+        policy: &DeclassificationPolicy,
+    ) -> bool {
+        // Must be in approval chain and policy must be valid
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        policy.is_approved_by(principal) && policy.is_valid(now)
+    }
+
+    /// Verify read access and log the attempt
+    pub fn check_read(
+        &self,
+        principal: Principal,
+        level: ClassificationLevel,
+    ) -> Result<(), String> {
+        let allowed = self.can_read(principal, level);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        self.log_access_attempt(
+            principal,
+            &format!("read:{:?}", level),
+            level,
+            allowed,
+            if allowed {
+                "principal has clearance for this level"
+            } else {
+                "principal lacks clearance for this level"
+            },
+            now,
+        );
+
+        if allowed {
+            Ok(())
+        } else {
+            Err(format!(
+                "Principal {:?} cannot read {:?}",
+                principal, level
+            ))
+        }
+    }
+
+    /// Verify declassification authorization and log the attempt
+    pub fn check_declassify(
+        &self,
+        principal: Principal,
+        policy: &DeclassificationPolicy,
+    ) -> Result<(), String> {
+        let allowed = self.can_declassify(principal, policy);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        let reason = if !policy.is_approved_by(principal) {
+            "principal not in policy approval chain"
+        } else if !policy.is_valid(now) {
+            "policy is expired or not yet effective"
+        } else {
+            "principal authorized for this policy"
+        };
+
+        self.log_access_attempt(
+            principal,
+            &format!("declassify:{}", policy.policy_id),
+            policy.source_level,
+            allowed,
+            reason,
+            now,
+        );
+
+        if allowed {
+            Ok(())
+        } else {
+            Err(format!(
+                "Principal {:?} cannot apply policy {}",
+                principal, policy.policy_id
+            ))
+        }
+    }
+
+    /// Log an access attempt (internal helper)
+    fn log_access_attempt(
+        &self,
+        principal: Principal,
+        resource: &str,
+        level: ClassificationLevel,
+        allowed: bool,
+        reason: &str,
+        timestamp_ns: u64,
+    ) {
+        let attempt = AccessAttempt {
+            principal,
+            resource: resource.to_string(),
+            level,
+            allowed,
+            timestamp_ns,
+            reason: reason.to_string(),
+        };
+
+        self.access_log.lock().unwrap().push(attempt);
+    }
+
+    /// Get all access attempts from the log
+    pub fn access_log(&self) -> Vec<AccessAttempt> {
+        self.access_log.lock().unwrap().clone()
+    }
+
+    /// Get denied access attempts only
+    pub fn denied_attempts(&self) -> Vec<AccessAttempt> {
+        self.access_log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|a| !a.allowed)
+            .cloned()
+            .collect()
+    }
+
+    /// Get allowed access attempts only
+    pub fn allowed_attempts(&self) -> Vec<AccessAttempt> {
+        self.access_log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|a| a.allowed)
+            .cloned()
+            .collect()
+    }
+
+    /// Register a declassifier for a specific field
+    pub fn register_declassifier(
+        &self,
+        field_name: String,
+        principal: Principal,
+    ) {
+        let mut roles = self.declassifier_roles.lock().unwrap();
+        roles
+            .entry(field_name)
+            .or_insert_with(Vec::new)
+            .push(principal);
+    }
+
+    /// Get declassifiers for a field
+    pub fn get_declassifiers(&self, field_name: &str) -> Vec<Principal> {
+        self.declassifier_roles
+            .lock()
+            .unwrap()
+            .get(field_name)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+impl Default for AccessControlEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,5 +955,170 @@ mod tests {
         assert_eq!(labels, 2);
         assert_eq!(policies, 1);
         assert_eq!(records, 1);
+    }
+
+    #[test]
+    fn test_access_control_engine_creation() {
+        let engine = AccessControlEngine::new();
+
+        // Verify default clearances are set
+        assert!(engine.can_read(Principal::Policy, ClassificationLevel::Unrestricted));
+        assert!(engine.can_read(Principal::Audit, ClassificationLevel::Internal));
+        assert!(engine.can_read(
+            Principal::Declassifier,
+            ClassificationLevel::SensitiveReward
+        ));
+    }
+
+    #[test]
+    fn test_access_control_policy_safe_boundary() {
+        let engine = AccessControlEngine::new();
+
+        // Policy process can only read Unrestricted
+        assert!(engine.can_read(Principal::Policy, ClassificationLevel::Unrestricted));
+        assert!(!engine.can_read(Principal::Policy, ClassificationLevel::SensitiveReward));
+        assert!(!engine.can_read(
+            Principal::Policy,
+            ClassificationLevel::PrivilegedTelemetry
+        ));
+        assert!(!engine.can_read(Principal::Policy, ClassificationLevel::Internal));
+    }
+
+    #[test]
+    fn test_access_control_audit_privilege() {
+        let engine = AccessControlEngine::new();
+
+        // Audit can read all levels
+        assert!(engine.can_read(Principal::Audit, ClassificationLevel::Unrestricted));
+        assert!(engine.can_read(Principal::Audit, ClassificationLevel::SensitiveReward));
+        assert!(engine.can_read(
+            Principal::Audit,
+            ClassificationLevel::PrivilegedTelemetry
+        ));
+        assert!(engine.can_read(Principal::Audit, ClassificationLevel::Internal));
+    }
+
+    #[test]
+    fn test_access_control_check_read() {
+        let engine = AccessControlEngine::new();
+
+        // Allowed read
+        let result = engine.check_read(Principal::Audit, ClassificationLevel::Internal);
+        assert!(result.is_ok());
+
+        // Denied read
+        let result = engine.check_read(Principal::Policy, ClassificationLevel::Internal);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("cannot read"));
+    }
+
+    #[test]
+    fn test_access_control_declassification_check() {
+        let engine = AccessControlEngine::new();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // Valid policy
+        let policy = DeclassificationPolicy::new(
+            "policy-001".to_string(),
+            1,
+            "reward".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit, Principal::Declassifier],
+            now,
+            None,
+        );
+
+        // Authorized principal
+        let result = engine.check_declassify(Principal::Audit, &policy);
+        assert!(result.is_ok());
+
+        // Unauthorized principal
+        let result = engine.check_declassify(Principal::Policy, &policy);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_access_control_expired_policy() {
+        let engine = AccessControlEngine::new();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // Expired policy
+        let policy = DeclassificationPolicy::new(
+            "policy-001".to_string(),
+            1,
+            "reward".to_string(),
+            ClassificationLevel::SensitiveReward,
+            ClassificationLevel::Unrestricted,
+            None,
+            vec![Principal::Audit, Principal::Declassifier],
+            now - 1000,
+            Some(now - 100),  // Already expired
+        );
+
+        // Should fail even with authorization
+        let result = engine.check_declassify(Principal::Audit, &policy);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_access_control_logging() {
+        let engine = AccessControlEngine::new();
+
+        // Make some access attempts
+        let _ = engine.check_read(Principal::Audit, ClassificationLevel::Internal);
+        let _ = engine.check_read(Principal::Policy, ClassificationLevel::Internal);
+        let _ = engine.check_read(Principal::Policy, ClassificationLevel::Unrestricted);
+
+        let log = engine.access_log();
+        assert_eq!(log.len(), 3);
+
+        // Verify allowed vs denied counts
+        let allowed = engine.allowed_attempts();
+        let denied = engine.denied_attempts();
+        assert_eq!(allowed.len(), 2);
+        assert_eq!(denied.len(), 1);
+
+        // Verify log entries have reasons
+        for entry in log.iter() {
+            assert!(!entry.reason.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_access_control_declassifier_registration() {
+        let engine = AccessControlEngine::new();
+
+        engine.register_declassifier("reward".to_string(), Principal::Declassifier);
+        engine.register_declassifier("reward".to_string(), Principal::Audit);
+
+        let declassifiers = engine.get_declassifiers("reward");
+        assert_eq!(declassifiers.len(), 2);
+        assert!(declassifiers.contains(&Principal::Declassifier));
+        assert!(declassifiers.contains(&Principal::Audit));
+
+        // Non-registered field
+        let declassifiers = engine.get_declassifiers("unknown");
+        assert!(declassifiers.is_empty());
+    }
+
+    #[test]
+    fn test_access_control_default_implementation() {
+        let engine = AccessControlEngine::default();
+
+        // Verify default() works the same as new()
+        assert!(engine.can_read(Principal::Policy, ClassificationLevel::Unrestricted));
+        assert!(!engine.can_read(Principal::Policy, ClassificationLevel::SensitiveReward));
     }
 }
