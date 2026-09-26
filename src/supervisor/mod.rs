@@ -2,6 +2,7 @@
 
 pub mod startup;
 pub mod process;
+pub mod orchestrator;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
