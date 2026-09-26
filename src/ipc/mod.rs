@@ -13,6 +13,7 @@ pub mod handshake;
 pub mod pipes;
 pub mod authenticator;
 pub mod gateway;
+pub mod token;
 
 #[cfg(test)]
 mod sprint3_integration_tests;
@@ -22,6 +23,7 @@ pub use handshake::{HandshakeMessage, HandshakeCoordinator, HandshakeState, Hand
 pub use pipes::{PipeManager, PipeInfo};
 pub use authenticator::{IpcMessageAuthenticator, SignatureResult, VerificationResult, AuthenticationAuditRecord, AuthenticationStatistics};
 pub use gateway::{IpcMessageGateway, GatewayResult, AuthorizationDecision, GatewayStatistics};
+pub use token::{ExecutionToken, TokenStatus, ExecutionTokenIssuer, ExecutionTokenVerifier, TokenStatistics};
 
 /// IPC-level errors
 #[derive(Debug, Clone)]
