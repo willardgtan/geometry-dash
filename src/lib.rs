@@ -24,6 +24,7 @@ pub use principals::{
     EvaluatorPrincipal, EvaluatorState, DecisionEvaluation, PolicyEffectiveness, ComplianceReport, DecisionQuality,
     SealerPrincipal, SealerState, ConsistencyCheck, ConsistencyViolation, ConsistencyAction, ConsistencyReport,
     DeveloperPrincipal, DeveloperState, TracePoint, IntrospectionSnapshot, DiagnosticReport, PerformanceMetric,
+    EvidenceVerifier, VerificationResult, VerificationStatus, ArtifactVerification,
 };
 pub use types::{Principal, InterfaceId, MessageType, DataClass};
 pub use evidence::{EvidenceManifest, ArtifactRef, ArtifactType};

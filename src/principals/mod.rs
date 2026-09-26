@@ -9,6 +9,7 @@ pub mod learner;
 pub mod evaluator;
 pub mod sealer;
 pub mod developer;
+pub mod gate_i;
 
 pub use policy::{PolicyPrincipal, PolicyState, GateADecision};
 pub use actuator::{ActuatorPrincipal, ActuatorState, CommandRequest, ExecutionResult, GateCDecision, GateIDecision};
@@ -18,3 +19,4 @@ pub use learner::{LearnerPrincipal, LearnerState, SecurityPattern, PolicyRecomme
 pub use evaluator::{EvaluatorPrincipal, EvaluatorState, DecisionEvaluation, PolicyEffectiveness, ComplianceReport, DecisionQuality};
 pub use sealer::{SealerPrincipal, SealerState, ConsistencyCheck, ConsistencyViolation, ConsistencyAction, ConsistencyReport};
 pub use developer::{DeveloperPrincipal, DeveloperState, TracePoint, IntrospectionSnapshot, DiagnosticReport, PerformanceMetric};
+pub use gate_i::{EvidenceVerifier, VerificationResult, VerificationStatus, ArtifactVerification};
