@@ -195,6 +195,125 @@ impl PrincipalOrchestrator {
     pub fn total_principals(&self) -> usize {
         self.sequence.total_principals()
     }
+
+    /// Start principal with automatic handshake initiation
+    /// This unified method:
+    /// 1. Spawns the principal process
+    /// 2. Marks pipes as created
+    /// 3. Sends INIT message
+    /// 4. Marks capabilities as set
+    /// Returns once INIT is sent; READY should be handled separately
+    pub fn start_principal_with_handshake(
+        &mut self,
+        principal: Principal,
+        uid: u32,
+        gid: u32,
+        seccomp_profile: String,
+        apparmor_profile: String,
+        message_id: u64,
+    ) -> Result<StartupResult, String> {
+        // Step 1: Create isolation config
+        let isolation = OsIsolation::new(
+            principal,
+            uid,
+            gid,
+            &seccomp_profile,
+            apparmor_profile,
+        );
+        isolation.validate()?;
+
+        // Step 2: Spawn the process
+        match self.process_manager.spawn(principal, &isolation, vec![]) {
+            Ok(process_info) => {
+                // Update checklist: process spawned
+                if let Some(checklist) = self.sequence.checklist_mut(principal) {
+                    checklist.mark_step("spawn");
+                    checklist.mark_step("pipes");  // Assume pipes created during spawn
+                    checklist.mark_step("capabilities");
+                }
+
+                // Step 3: Send INIT message
+                match self.send_init(principal, message_id) {
+                    Ok(_) => Ok(StartupResult::Success),
+                    Err(e) => {
+                        // If handshake fails, still spawned but not ready
+                        Err(format!("Handshake init failed: {}", e))
+                    }
+                }
+            }
+            Err(e) => Err(format!("Process spawn failed: {}", e)),
+        }
+    }
+
+    /// Handle incoming READY message and update orchestrator state
+    pub fn handle_ready_message(
+        &mut self,
+        principal: Principal,
+        message: HandshakeMessage,
+    ) -> Result<(), String> {
+        // Verify handshake state
+        let handshake = self.handshakes.get_mut(&principal)
+            .ok_or_else(|| format!("No handshake for {:?}", principal))?;
+
+        // Process the READY message
+        handshake.receive_ready(message)?;
+
+        // Update checklist
+        if let Some(checklist) = self.sequence.checklist_mut(principal) {
+            checklist.mark_step("ready");
+        }
+
+        Ok(())
+    }
+
+    /// Wait for all principals to reach ready state (blocking with timeout)
+    pub fn wait_all_ready(&self, timeout_ms: u64) -> Result<(), String> {
+        let start = std::time::SystemTime::now();
+        let timeout = std::time::Duration::from_millis(timeout_ms);
+
+        loop {
+            if self.all_ready() {
+                return Ok(());
+            }
+
+            if let Ok(elapsed) = start.elapsed() {
+                if elapsed > timeout {
+                    return Err(format!("Timeout waiting for all principals to be ready"));
+                }
+            }
+
+            // Sleep briefly before checking again
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// Get detailed startup status for all principals
+    pub fn startup_status(&self) -> Vec<(Principal, bool, bool, bool, bool)> {
+        let mut status = Vec::new();
+
+        for principal in &[
+            Principal::Policy,
+            Principal::Actuator,
+            Principal::Audit,
+            Principal::Declassifier,
+            Principal::Learner,
+            Principal::Evaluator,
+            Principal::Sealer,
+            Principal::Developer,
+        ] {
+            if let Some(checklist) = self.sequence.checklist(*principal) {
+                status.push((
+                    *principal,
+                    checklist.process_spawned,
+                    checklist.pipes_created,
+                    checklist.capabilities_set,
+                    checklist.ready_signal_received,
+                ));
+            }
+        }
+
+        status
+    }
 }
 
 #[cfg(test)]
@@ -381,5 +500,71 @@ mod tests {
         orchestrator.receive_ready(Principal::Actuator, ready2).unwrap();
 
         assert!(orchestrator.all_ready());
+    }
+
+    #[test]
+    fn test_orchestrator_startup_status() {
+        let ctx = StartupContext::new(
+            "run-1".to_string(),
+            "boot-1".to_string(),
+            "epoch-1".to_string(),
+            "/var/run/geometry-dash".to_string(),
+        );
+
+        let mut orchestrator = PrincipalOrchestrator::new(ctx);
+        orchestrator.add_principal(
+            Principal::Policy,
+            1001,
+            1001,
+            "strict".to_string(),
+            "policy".to_string(),
+        );
+
+        let status = orchestrator.startup_status();
+        assert!(!status.is_empty());
+
+        // Check that Policy is in NOT_STARTED state initially
+        if let Some((_, spawned, pipes, capabilities, ready)) = status.iter().find(|(p, _, _, _, _)| *p == Principal::Policy) {
+            assert!(!spawned);
+            assert!(!pipes);
+            assert!(!capabilities);
+            assert!(!ready);
+        }
+    }
+
+    #[test]
+    fn test_orchestrator_handle_ready_message() {
+        let ctx = StartupContext::new(
+            "run-1".to_string(),
+            "boot-1".to_string(),
+            "epoch-1".to_string(),
+            "/var/run/geometry-dash".to_string(),
+        );
+
+        let mut orchestrator = PrincipalOrchestrator::new(ctx);
+        orchestrator.add_principal(
+            Principal::Policy,
+            1001,
+            1001,
+            "strict".to_string(),
+            "policy".to_string(),
+        );
+
+        // Send INIT first
+        orchestrator.send_init(Principal::Policy, 100).unwrap();
+
+        // Create and handle READY message
+        let ready_msg = HandshakeMessage::ready(
+            Principal::Policy.as_u8(),
+            Principal::Supervisor.as_u8(),
+            100,
+            "run-1".to_string(),
+            "boot-1".to_string(),
+            "epoch-1".to_string(),
+            CAPABILITY_READ | CAPABILITY_WRITE,
+        );
+
+        assert!(orchestrator.handle_ready_message(Principal::Policy, ready_msg).is_ok());
+        assert!(orchestrator.is_principal_ready(Principal::Policy));
     }
 }
