@@ -1,6 +1,7 @@
 // Supervisor Module: Master Process Orchestrator (Week 1 Tasks 1.1–1.6)
 
 pub mod startup;
+pub mod process;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
