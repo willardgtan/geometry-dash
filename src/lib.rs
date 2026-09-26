@@ -16,6 +16,7 @@ pub use hsm::{HsmClient, AutoHsmClient, RealHsmClient, FilesystemHsmClient, Sign
 pub use principals::{
     PolicyPrincipal, PolicyState, GateADecision,
     ActuatorPrincipal, ActuatorState, CommandRequest, ExecutionResult, GateCDecision, GateIDecision,
+    AuditPrincipal, AuditState, CorrelationResult, BreachDetection, ForensicAnalysis,
 };
 pub use types::{Principal, InterfaceId, MessageType, DataClass};
 
