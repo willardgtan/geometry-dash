@@ -1,0 +1,160 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Geometry Dash Evidence Provenance Schema",
+  "version": "1.0",
+  "description": "Canonical immutable provenance schema for all artifacts in the Geometry Dash security system. Frozen at startup, non-negotiable. All 12 fields are mandatory.",
+  "type": "object",
+  "properties": {
+    "artifact_id": {
+      "type": "string",
+      "description": "Unique artifact identifier (UUID v4 or SHA256 hash)",
+      "minLength": 32,
+      "maxLength": 36,
+      "pattern": "^[a-f0-9-]+$"
+    },
+    "artifact_type": {
+      "type": "string",
+      "enum": [
+        "OBSERVATION",
+        "ACTION_RESULT",
+        "POLICY_SNAPSHOT",
+        "DECLASSIFIED_RECORD",
+        "EVIDENCE_SEAL",
+        "SECURITY_EVENT",
+        "CLASSIFIER_OUTPUT",
+        "OTHER"
+      ],
+      "description": "Type of artifact produced"
+    },
+    "produced_time_ns": {
+      "type": "integer",
+      "description": "Nanosecond timestamp when artifact was produced (Unix epoch). Must be monotonically increasing.",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "produced_by_principal": {
+      "type": "string",
+      "enum": [
+        "PRN-SUPERVISOR",
+        "PRN-POLICY",
+        "PRN-ACTUATOR",
+        "PRN-AUDIT",
+        "PRN-DECLASSIFIER",
+        "PRN-LEARNER",
+        "PRN-EVALUATOR",
+        "PRN-SEALER",
+        "PRN-DEVELOPER"
+      ],
+      "description": "Principal process that produced this artifact"
+    },
+    "data_class": {
+      "type": "string",
+      "enum": [
+        "POLICY_SAFE",
+        "PRIVILEGED",
+        "DECLASSIFIED",
+        "CONTROL_CRITICAL",
+        "EVIDENCE",
+        "HOLDOUT_SENSITIVE"
+      ],
+      "description": "Data classification of this artifact (per P1.1 §3)"
+    },
+    "artifact_hash": {
+      "type": "string",
+      "description": "SHA-256 hash of artifact file contents (hex-encoded)",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "artifact_hash_algorithm": {
+      "type": "string",
+      "enum": ["SHA-256"],
+      "description": "Hash algorithm used for artifact_hash (must always be SHA-256, per REQ-CRYPTO-008)"
+    },
+    "source_evidence_id": {
+      "type": ["string", "null"],
+      "description": "If this artifact was derived from another, the source artifact's ID. Null if original.",
+      "minLength": 32,
+      "maxLength": 36,
+      "pattern": "^([a-f0-9-]+)?$"
+    },
+    "transform_rule": {
+      "type": ["string", "null"],
+      "description": "If derived, which transformation rule applied (e.g., 'collision_detected_to_sparse_reward'). Null if original.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "classification_changed": {
+      "type": "boolean",
+      "description": "True if this artifact resulted in a classification change (e.g., PRIVILEGED → DECLASSIFIED)"
+    },
+    "declassifier_principal": {
+      "type": ["string", "null"],
+      "description": "If data was declassified, which principal performed the declassification (should be PRN-DECLASSIFIER). Null if never declassified.",
+      "enum": ["PRN-DECLASSIFIER", null]
+    },
+    "declassified_time_ns": {
+      "type": ["integer", "null"],
+      "description": "Nanosecond timestamp of declassification (if classification_changed=true). Null otherwise.",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "witness_principal": {
+      "type": "string",
+      "enum": [
+        "PRN-SUPERVISOR",
+        "PRN-POLICY",
+        "PRN-ACTUATOR",
+        "PRN-AUDIT",
+        "PRN-DECLASSIFIER",
+        "PRN-LEARNER",
+        "PRN-EVALUATOR",
+        "PRN-SEALER",
+        "PRN-DEVELOPER"
+      ],
+      "description": "Principal that witnessed/signed this artifact (for classification changes and sensitive operations, per P1.3 §4)"
+    },
+    "witness_signature": {
+      "type": "string",
+      "description": "Base64-encoded Ed25519 signature by witness_principal over (artifact_id || produced_time_ns || data_class || artifact_hash)",
+      "minLength": 86,
+      "maxLength": 88
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Unique identifier for this run/session (UUID v4)",
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+    },
+    "boot_id": {
+      "type": "string",
+      "description": "Unique identifier for this boot (from kernel /proc/sys/kernel/random/boot_id or UUID)",
+      "minLength": 32,
+      "maxLength": 36
+    },
+    "epoch_id": {
+      "type": "string",
+      "description": "Epoch identifier for this run (used for key rotation tracking)",
+      "minLength": 1,
+      "maxLength": 64
+    }
+  },
+  "required": [
+    "artifact_id",
+    "artifact_type",
+    "produced_time_ns",
+    "produced_by_principal",
+    "data_class",
+    "artifact_hash",
+    "artifact_hash_algorithm",
+    "source_evidence_id",
+    "transform_rule",
+    "classification_changed",
+    "declassifier_principal",
+    "declassified_time_ns",
+    "witness_principal",
+    "witness_signature",
+    "run_id",
+    "boot_id",
+    "epoch_id"
+  ],
+  "additionalProperties": false,
+  "description_extended": "IMMUTABLE SCHEMA (frozen at startup). Per REQ-EVIDENCE-001 and P1.3 §2.1. All fields are mandatory. No runtime modifications permitted. Gate I audit (REQ-GATE-004) verifies all artifacts against this schema."
+}
