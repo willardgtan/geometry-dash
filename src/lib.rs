@@ -9,7 +9,7 @@ pub mod types;
 
 pub use supervisor::{Supervisor, SupervisorState, PrincipalState, PrincipalHealth, orchestrator::PrincipalOrchestrator};
 pub use security_ledger::{SecurityLedger, SecurityEvent, EventType, Severity};
-pub use ipc::{UniversalMessage, UniversalMessageHeader, IpcError, NonceCache, CapabilityMatrix};
+pub use ipc::{UniversalMessage, UniversalMessageHeader, IpcError, NonceCache, CapabilityMatrix, PipeManager, PipeInfo};
 pub use types::{Principal, InterfaceId, MessageType, DataClass};
 
 #[cfg(test)]

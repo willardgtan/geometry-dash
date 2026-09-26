@@ -6,6 +6,7 @@ use crate::types::Principal;
 use crate::supervisor::startup::{StartupContext, StartupSequence, PrincipalStartupChecklist};
 use crate::supervisor::process::{ProcessManager, OsIsolation};
 use crate::ipc::handshake::{HandshakeCoordinator, HandshakeMessage, CAPABILITY_READ, CAPABILITY_WRITE, CAPABILITY_AUDIT};
+use crate::ipc::PipeManager;
 use crate::security_ledger::EventType;
 
 /// Result of principal startup
@@ -23,6 +24,7 @@ pub struct PrincipalOrchestrator {
     context: StartupContext,
     sequence: StartupSequence,
     process_manager: ProcessManager,
+    pipe_manager: PipeManager,
     handshakes: HashMap<Principal, HandshakeCoordinator>,
 }
 
@@ -31,8 +33,10 @@ impl PrincipalOrchestrator {
     pub fn new(context: StartupContext) -> Self {
         let mut orchestrator = PrincipalOrchestrator {
             context: context.clone(),
-            sequence: StartupSequence::new(context),
+            sequence: StartupSequence::new(context.clone()),
             process_manager: ProcessManager::new(),
+            pipe_manager: PipeManager::new(&format!("{}/pipes", context.ipc_root))
+                .unwrap_or_else(|_| PipeManager::new("/tmp/geometry-dash-pipes").unwrap()),
             handshakes: HashMap::new(),
         };
 
@@ -314,6 +318,33 @@ impl PrincipalOrchestrator {
 
         status
     }
+
+    /// Initialize all named pipes (IF-001 through IF-022)
+    pub fn initialize_pipes(&mut self) -> Result<(), String> {
+        self.pipe_manager.create_all_pipes()
+            .map_err(|e| format!("Failed to initialize pipes: {}", e))
+    }
+
+    /// Get number of pipes created
+    pub fn pipe_count(&self) -> usize {
+        self.pipe_manager.pipe_count()
+    }
+
+    /// Cleanup all pipes on shutdown
+    pub fn cleanup_pipes(&mut self) -> Result<(), String> {
+        self.pipe_manager.cleanup_all()
+            .map_err(|e| format!("Failed to cleanup pipes: {}", e))
+    }
+
+    /// Get pipe manager reference
+    pub fn pipe_manager(&self) -> &PipeManager {
+        &self.pipe_manager
+    }
+
+    /// Get mutable pipe manager reference
+    pub fn pipe_manager_mut(&mut self) -> &mut PipeManager {
+        &mut self.pipe_manager
+    }
 }
 
 #[cfg(test)]
@@ -566,5 +597,53 @@ mod tests {
 
         assert!(orchestrator.handle_ready_message(Principal::Policy, ready_msg).is_ok());
         assert!(orchestrator.is_principal_ready(Principal::Policy));
+    }
+
+    #[test]
+    fn test_orchestrator_initialize_pipes() {
+        let ctx = StartupContext::new(
+            "run-1".to_string(),
+            "boot-1".to_string(),
+            "epoch-1".to_string(),
+            "/var/run/geometry-dash".to_string(),
+        );
+
+        let mut orchestrator = PrincipalOrchestrator::new(ctx);
+        let result = orchestrator.initialize_pipes();
+
+        assert!(result.is_ok());
+        assert_eq!(orchestrator.pipe_count(), 22);
+    }
+
+    #[test]
+    fn test_orchestrator_cleanup_pipes() {
+        let ctx = StartupContext::new(
+            "run-1".to_string(),
+            "boot-1".to_string(),
+            "epoch-1".to_string(),
+            "/var/run/geometry-dash".to_string(),
+        );
+
+        let mut orchestrator = PrincipalOrchestrator::new(ctx);
+        orchestrator.initialize_pipes().unwrap();
+        assert_eq!(orchestrator.pipe_count(), 22);
+
+        let result = orchestrator.cleanup_pipes();
+        assert!(result.is_ok());
+        assert_eq!(orchestrator.pipe_count(), 0);
+    }
+
+    #[test]
+    fn test_orchestrator_pipe_manager_access() {
+        let ctx = StartupContext::new(
+            "run-1".to_string(),
+            "boot-1".to_string(),
+            "epoch-1".to_string(),
+            "/var/run/geometry-dash".to_string(),
+        );
+
+        let mut orchestrator = PrincipalOrchestrator::new(ctx);
+        let pipe_mgr = orchestrator.pipe_manager();
+        assert_eq!(pipe_mgr.pipe_count(), 0);
     }
 }

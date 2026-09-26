@@ -758,3 +758,173 @@ fn test_principal_health_crash_count_independence() {
     // And Policy should be running
     assert_eq!(supervisor.principal_health(Principal::Policy).unwrap().state, PrincipalState::Running);
 }
+
+// ============================================================================
+// Named Pipe Management Tests (Week 1 Task 1.4)
+// ============================================================================
+
+#[test]
+fn test_pipe_manager_all_22_interfaces() {
+    use geometry_dash::PipeManager;
+    
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let mut pm = PipeManager::new(temp_dir.path().to_str().unwrap()).unwrap();
+
+    // Create all 22 pipes
+    let result = pm.create_all_pipes();
+    assert!(result.is_ok());
+    assert_eq!(pm.pipe_count(), 22);
+
+    // Verify all exist
+    for if_id in 1..=22 {
+        assert!(pm.get_pipe(if_id).is_some());
+    }
+
+    pm.cleanup_all().unwrap();
+}
+
+#[test]
+fn test_pipe_manager_individual_creation() {
+    use geometry_dash::PipeManager;
+    
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let mut pm = PipeManager::new(temp_dir.path().to_str().unwrap()).unwrap();
+
+    pm.create_pipe(1).unwrap();
+    assert_eq!(pm.pipe_count(), 1);
+
+    pm.create_pipe(10).unwrap();
+    assert_eq!(pm.pipe_count(), 2);
+
+    pm.create_pipe(22).unwrap();
+    assert_eq!(pm.pipe_count(), 3);
+
+    pm.cleanup_all().unwrap();
+    assert_eq!(pm.pipe_count(), 0);
+}
+
+#[test]
+fn test_pipe_manager_invalid_interface_ids() {
+    use geometry_dash::PipeManager;
+    
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let mut pm = PipeManager::new(temp_dir.path().to_str().unwrap()).unwrap();
+
+    // Test invalid IDs
+    assert!(pm.create_pipe(0).is_err());   // Below range
+    assert!(pm.create_pipe(23).is_err());  // Above range
+    assert!(pm.create_pipe(100).is_err()); // Way above range
+}
+
+#[test]
+fn test_pipe_manager_idempotent_creation() {
+    use geometry_dash::PipeManager;
+    
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let mut pm = PipeManager::new(temp_dir.path().to_str().unwrap()).unwrap();
+
+    // Create once
+    pm.create_all_pipes().unwrap();
+    assert_eq!(pm.pipe_count(), 22);
+
+    // Create again (should succeed by removing old ones)
+    pm.create_all_pipes().unwrap();
+    assert_eq!(pm.pipe_count(), 22);
+}
+
+#[test]
+fn test_orchestrator_pipe_initialization_full_workflow() {
+    use geometry_dash::PrincipalOrchestrator;
+    use geometry_dash::supervisor::startup::StartupContext;
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let ctx = StartupContext::new(
+        "run-1".to_string(),
+        "boot-1".to_string(),
+        "epoch-1".to_string(),
+        temp_dir.path().to_str().unwrap().to_string(),
+    );
+
+    let mut orchestrator = PrincipalOrchestrator::new(ctx);
+    
+    // Initialize pipes
+    assert!(orchestrator.initialize_pipes().is_ok());
+    assert_eq!(orchestrator.pipe_count(), 22);
+
+    // Access pipe manager
+    let pm = orchestrator.pipe_manager();
+    assert_eq!(pm.pipe_count(), 22);
+
+    // Cleanup
+    let mut orch = orchestrator;
+    assert!(orch.cleanup_pipes().is_ok());
+    assert_eq!(orch.pipe_count(), 0);
+}
+
+#[test]
+fn test_pipe_names_follow_convention() {
+    use geometry_dash::PipeManager;
+    
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let mut pm = PipeManager::new(temp_dir.path().to_str().unwrap()).unwrap();
+
+    pm.create_all_pipes().unwrap();
+
+    let pipes = pm.all_pipes();
+    for pipe_info in pipes {
+        let path_str = pipe_info.pipe_path.to_string_lossy();
+        
+        // Should be named if-NNN.pipe
+        let filename = pipe_info.pipe_path.file_name().unwrap().to_string_lossy();
+        assert!(filename.starts_with("if-"));
+        assert!(filename.ends_with(".pipe"));
+        
+        // Extract and verify interface ID
+        let parts: Vec<&str> = filename.split('-').collect();
+        assert_eq!(parts.len(), 2);  // if- and rest
+    }
+
+    pm.cleanup_all().unwrap();
+}
+
+#[test]
+fn test_pipe_manager_cleanup_removes_all() {
+    use geometry_dash::PipeManager;
+    
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let mut pm = PipeManager::new(temp_dir.path().to_str().unwrap()).unwrap();
+
+    // Create pipes
+    pm.create_all_pipes().unwrap();
+    assert_eq!(pm.pipe_count(), 22);
+
+    // Cleanup all
+    pm.cleanup_all().unwrap();
+    assert_eq!(pm.pipe_count(), 0);
+    
+    // Pipes list should be empty
+    assert_eq!(pm.all_pipes().len(), 0);
+}
+
+#[test]
+fn test_pipe_manager_selective_cleanup() {
+    use geometry_dash::PipeManager;
+    
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let mut pm = PipeManager::new(temp_dir.path().to_str().unwrap()).unwrap();
+
+    // Create three pipes
+    pm.create_pipe(1).unwrap();
+    pm.create_pipe(5).unwrap();
+    pm.create_pipe(10).unwrap();
+    assert_eq!(pm.pipe_count(), 3);
+
+    // Cleanup one
+    pm.cleanup_pipe(5).unwrap();
+    assert_eq!(pm.pipe_count(), 2);
+
+    // Verify only 1 and 10 remain
+    assert!(pm.get_pipe(1).is_some());
+    assert!(pm.get_pipe(5).is_none());
+    assert!(pm.get_pipe(10).is_some());
+}

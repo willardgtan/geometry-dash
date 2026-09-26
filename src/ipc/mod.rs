@@ -10,9 +10,11 @@ use crate::types::{Principal, InterfaceId};
 
 pub mod message;
 pub mod handshake;
+pub mod pipes;
 
 pub use message::{UniversalMessage, UniversalMessageHeader};
 pub use handshake::{HandshakeMessage, HandshakeCoordinator, HandshakeState, HandshakeMessageType};
+pub use pipes::{PipeManager, PipeInfo};
 
 /// IPC-level errors
 #[derive(Debug, Clone)]
