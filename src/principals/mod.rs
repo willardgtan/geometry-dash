@@ -11,6 +11,9 @@ pub mod sealer;
 pub mod developer;
 pub mod gate_i;
 
+#[cfg(test)]
+mod integration_tests;
+
 pub use policy::{PolicyPrincipal, PolicyState, GateADecision};
 pub use actuator::{ActuatorPrincipal, ActuatorState, CommandRequest, ExecutionResult, GateCDecision, GateIDecision};
 pub use audit::{AuditPrincipal, AuditState, CorrelationResult, BreachDetection, ForensicAnalysis};
