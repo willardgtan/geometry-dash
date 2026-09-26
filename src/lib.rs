@@ -1,5 +1,6 @@
 // Geometry Dash Phase 2 - Main Library
 // Week 1 Foundation Layer: Supervisor, SecurityLedger, IPC, HSM Client
+// Sprint 1: Evidence Authenticity & Sealing (SEC-C02 remediation)
 
 pub mod supervisor;
 pub mod security_ledger;
@@ -8,6 +9,7 @@ pub mod hsm;
 pub mod principals;
 pub mod config;
 pub mod types;
+pub mod evidence;
 
 pub use supervisor::{Supervisor, SupervisorState, PrincipalState, PrincipalHealth, orchestrator::PrincipalOrchestrator};
 pub use security_ledger::{SecurityLedger, SecurityEvent, EventType, Severity};
@@ -24,6 +26,7 @@ pub use principals::{
     DeveloperPrincipal, DeveloperState, TracePoint, IntrospectionSnapshot, DiagnosticReport, PerformanceMetric,
 };
 pub use types::{Principal, InterfaceId, MessageType, DataClass};
+pub use evidence::{EvidenceManifest, ArtifactRef, ArtifactType};
 
 #[cfg(test)]
 mod tests {
