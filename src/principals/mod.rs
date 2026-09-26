@@ -10,12 +10,16 @@ pub mod evaluator;
 pub mod sealer;
 pub mod developer;
 pub mod gate_i;
+pub mod identity;
 
 #[cfg(test)]
 mod integration_tests;
 
 #[cfg(test)]
 mod sprint2_integration_tests;
+
+#[cfg(test)]
+mod sprint3_integration_tests;
 
 pub use policy::{PolicyPrincipal, PolicyState, GateADecision};
 pub use actuator::{ActuatorPrincipal, ActuatorState, CommandRequest, ExecutionResult, GateCDecision, GateIDecision};
@@ -26,3 +30,4 @@ pub use evaluator::{EvaluatorPrincipal, EvaluatorState, DecisionEvaluation, Poli
 pub use sealer::{SealerPrincipal, SealerState, ConsistencyCheck, ConsistencyViolation, ConsistencyAction, ConsistencyReport};
 pub use developer::{DeveloperPrincipal, DeveloperState, TracePoint, IntrospectionSnapshot, DiagnosticReport, PerformanceMetric};
 pub use gate_i::{EvidenceVerifier, VerificationResult, VerificationStatus, ArtifactVerification};
+pub use identity::{PublicKey, PrivateKey, PrincipalIdentity, KeyPair, PrincipalIdentityRegistry, IdentityAuditRecord, IdentityStatistics};
