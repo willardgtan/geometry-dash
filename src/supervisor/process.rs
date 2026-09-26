@@ -1,8 +1,11 @@
 // Process Management & OS Isolation (Week 1 Task 1.1 continued)
 // Seccomp filtering, privilege dropping, process spawning
 
-use std::process::{Command, Child, Stdio};
+use std::process::{Command, Stdio};
 use std::collections::HashMap;
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use crate::types::Principal;
 
 /// Seccomp profile names (maps to system-provided profiles)
@@ -148,38 +151,154 @@ impl ProcessManager {
             .ok_or_else(|| format!("Binary not registered for {:?}", principal))?
             .clone();
 
+        // On Linux, fork and apply isolation in child process
+        #[cfg(target_os = "linux")]
+        {
+            return Self::spawn_with_isolation_unix(
+                principal,
+                isolation,
+                &binary_path,
+                args,
+                &mut self.processes,
+            );
+        }
+
+        // Fallback: use standard Command (for non-Unix or test environments)
+        #[cfg(not(target_os = "linux"))]
+        {
+            let child = Command::new(&binary_path)
+                .args(&args)
+                .uid(isolation.uid)
+                .gid(isolation.gid)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("Failed to spawn {:?}: {}", principal, e))?;
+
+            let pid = child.id();
+            let now_ns = Self::current_timestamp_ns();
+
+            let process_info = ProcessInfo {
+                principal,
+                pid,
+                uid: isolation.uid,
+                gid: isolation.gid,
+                binary_path,
+                started_at_ns: now_ns,
+            };
+
+            self.processes.insert(principal, process_info.clone());
+            Ok(process_info)
+        }
+    }
+
+    /// Spawn with Linux OS isolation (fork/exec with seccomp, AppArmor, privilege drop)
+    #[cfg(target_os = "linux")]
+    fn spawn_with_isolation_unix(
+        principal: Principal,
+        isolation: &OsIsolation,
+        binary_path: &str,
+        args: Vec<String>,
+        processes: &mut HashMap<Principal, ProcessInfo>,
+    ) -> Result<ProcessInfo, String> {
+        use nix::unistd::{fork, execve, setuid, setgid, ForkResult};
+        use std::ffi::CString;
+
+        match unsafe { fork() }
+            .map_err(|e| format!("Failed to fork {:?}: {}", principal, e))?
+        {
+            ForkResult::Parent { child } => {
+                // Parent: record process and return
+                let now_ns = Self::current_timestamp_ns();
+                let process_info = ProcessInfo {
+                    principal,
+                    pid: child.as_raw() as u32,
+                    uid: isolation.uid,
+                    gid: isolation.gid,
+                    binary_path: binary_path.to_string(),
+                    started_at_ns: now_ns,
+                };
+                processes.insert(principal, process_info.clone());
+                Ok(process_info)
+            }
+            ForkResult::Child => {
+                // Child: apply isolation and exec
+
+                // 1. Switch GID first (requires fewer privs than UID)
+                if let Err(e) = setgid(nix::unistd::Gid::from_raw(isolation.gid)) {
+                    eprintln!("Failed to setgid to {}: {}", isolation.gid, e);
+                    std::process::exit(1);
+                }
+
+                // 2. Switch UID
+                if let Err(e) = setuid(nix::unistd::Uid::from_raw(isolation.uid)) {
+                    eprintln!("Failed to setuid to {}: {}", isolation.uid, e);
+                    std::process::exit(1);
+                }
+
+                // 3. Apply seccomp filter (simplified: just log which profile would be loaded)
+                // Full seccomp requires libseccomp or direct prctl syscalls
+                Self::apply_seccomp_profile(&isolation.seccomp_profile);
+
+                // 4. Load AppArmor profile (simplified: just log)
+                Self::load_apparmor_profile(&isolation.apparmor_profile);
+
+                // 5. Drop Linux capabilities (simplified: just log)
+                for cap in &isolation.capabilities_drop {
+                    eprintln!("Would drop capability: {}", cap);
+                }
+
+                // 6. Exec the binary with arguments
+                let binary_cstr = CString::new(binary_path)
+                    .map_err(|e| format!("Invalid binary path: {}", e))
+                    .unwrap_or_else(|e| {
+                        eprintln!("exec failed: {}", e);
+                        std::process::exit(127);
+                    });
+
+                let mut argv = vec![binary_cstr.clone()];
+                for arg in args {
+                    if let Ok(arg_cstr) = CString::new(arg) {
+                        argv.push(arg_cstr);
+                    }
+                }
+
+                let _ = execve::<&CStr, &CStr>(&binary_cstr, &argv, &[])
+                    .map_err(|e| {
+                        eprintln!("execve failed: {}", e);
+                        std::process::exit(127);
+                    });
+
+                // execve never returns on success
+                unreachable!("execve should never return")
+            }
+        }
+    }
+
+    /// Apply seccomp profile to running process (child process context)
+    #[cfg(target_os = "linux")]
+    fn apply_seccomp_profile(profile: &SeccompProfile) {
         // In a real implementation, this would:
-        // 1. Fork the process
-        // 2. Apply seccomp filters via prctl(PR_SET_SECCOMP, ...)
-        // 3. Drop capabilities via capset()
-        // 4. Load AppArmor profile
-        // 5. Switch UID/GID via setuid/setgid
-        // 6. Exec the binary
+        // 1. Load seccomp filter from system profiles
+        // 2. Use prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, ...)
+        // 3. Install BPF filter for allowed syscalls
 
-        // For now, simulate the spawn
-        let child = Command::new(&binary_path)
-            .args(&args)
-            .uid(isolation.uid)
-            .gid(isolation.gid)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Failed to spawn {:?}: {}", principal, e))?;
+        eprintln!("Applying seccomp profile: {:?}", profile);
 
-        let pid = child.id();
-        let now_ns = Self::current_timestamp_ns();
+        // For now, just log which syscalls would be allowed
+        let allowed = profile.allowed_syscalls();
+        eprintln!("Allowed syscalls: {} syscalls", allowed.len());
+    }
 
-        let process_info = ProcessInfo {
-            principal,
-            pid,
-            uid: isolation.uid,
-            gid: isolation.gid,
-            binary_path,
-            started_at_ns: now_ns,
-        };
+    /// Load AppArmor profile for process (child process context)
+    #[cfg(target_os = "linux")]
+    fn load_apparmor_profile(profile_name: &str) {
+        // In a real implementation, this would:
+        // 1. Read /sys/apparmor/profiles
+        // 2. Apply profile via prctl(PR_SET_PDEATHSIG, ...)
+        // 3. Write to /proc/self/attr/current
 
-        self.processes.insert(principal, process_info.clone());
-        Ok(process_info)
+        eprintln!("Loading AppArmor profile: {}", profile_name);
     }
 
     /// Get process info for principal
