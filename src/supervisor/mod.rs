@@ -1,5 +1,7 @@
 // Supervisor Module: Master Process Orchestrator (Week 1 Tasks 1.1–1.6)
 
+pub mod startup;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use crate::security_ledger::{SecurityLedger, EventType, Severity};

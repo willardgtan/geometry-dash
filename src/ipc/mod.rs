@@ -9,7 +9,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::types::{Principal, InterfaceId};
 
 pub mod message;
+pub mod handshake;
+
 pub use message::{UniversalMessage, UniversalMessageHeader};
+pub use handshake::{HandshakeMessage, HandshakeCoordinator, HandshakeState, HandshakeMessageType};
 
 /// IPC-level errors
 #[derive(Debug, Clone)]
