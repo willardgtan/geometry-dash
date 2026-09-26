@@ -4,7 +4,9 @@
 pub mod policy;
 pub mod actuator;
 pub mod audit;
+pub mod declassifier;
 
 pub use policy::{PolicyPrincipal, PolicyState, GateADecision};
 pub use actuator::{ActuatorPrincipal, ActuatorState, CommandRequest, ExecutionResult, GateCDecision, GateIDecision};
 pub use audit::{AuditPrincipal, AuditState, CorrelationResult, BreachDetection, ForensicAnalysis};
+pub use declassifier::{DeclassifierPrincipal, DeclassifierState, ClassificationLevel, ClassificationDecision, DeclassificationRequest, DeclassificationDecision, ClassificationLabel};
