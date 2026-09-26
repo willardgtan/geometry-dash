@@ -391,3 +391,188 @@ fn test_multiple_supervisor_instances() {
     assert!(sup1.is_principal_healthy(Principal::Policy));
     assert!(!sup2.is_principal_healthy(Principal::Policy));
 }
+
+// ============================================================================
+// Performance & Benchmarking Tests
+// ============================================================================
+
+#[test]
+fn bench_message_serialization_latency() {
+    use std::time::Instant;
+
+    const NUM_MESSAGES: usize = 1000;
+    let mut total_serialize_ns = 0u128;
+    let mut total_deserialize_ns = 0u128;
+
+    for i in 0..NUM_MESSAGES {
+        let payload = format!("payload-{}", i).into_bytes();
+        let msg = UniversalMessage::new(
+            (i % 22 + 1) as u32,
+            (i % 4) as u8,
+            (i % 9) as u8,
+            ((i + 1) % 9) as u8,
+            0,
+            payload,
+        );
+
+        // Measure serialization
+        let start = Instant::now();
+        let json = msg.to_json().unwrap();
+        let serialize_ns = start.elapsed().as_nanos();
+        total_serialize_ns += serialize_ns;
+
+        // Measure deserialization
+        let start = Instant::now();
+        let _parsed = UniversalMessage::from_json(&json).unwrap();
+        let deserialize_ns = start.elapsed().as_nanos();
+        total_deserialize_ns += deserialize_ns;
+    }
+
+    let avg_serialize_us = (total_serialize_ns as f64 / NUM_MESSAGES as f64) / 1000.0;
+    let avg_deserialize_us = (total_deserialize_ns as f64 / NUM_MESSAGES as f64) / 1000.0;
+
+    eprintln!("Message serialization latency:");
+    eprintln!("  Serialize: {:.2} µs average ({:.0} ns total)", avg_serialize_us, total_serialize_ns);
+    eprintln!("  Deserialize: {:.2} µs average ({:.0} ns total)", avg_deserialize_us, total_deserialize_ns);
+
+    // Target: <10ms = 10,000 µs per message round-trip
+    // Average should be well under this
+    assert!(avg_serialize_us < 5000.0, "Serialization too slow: {:.2} µs", avg_serialize_us);
+    assert!(avg_deserialize_us < 5000.0, "Deserialization too slow: {:.2} µs", avg_deserialize_us);
+}
+
+#[test]
+fn bench_nonce_cache_insertion_throughput() {
+    use std::time::Instant;
+
+    const NUM_NONCES: usize = 100_000;
+    let cache = NonceCache::new(60000, 100_000);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+
+    let start = Instant::now();
+    for i in 0..NUM_NONCES {
+        let mut nonce = [0u8; 32];
+        nonce[0] = ((i >> 24) & 0xFF) as u8;
+        nonce[1] = ((i >> 16) & 0xFF) as u8;
+        nonce[2] = ((i >> 8) & 0xFF) as u8;
+        nonce[3] = (i & 0xFF) as u8;
+
+        let _ = cache.check_and_insert(nonce, 1, i as u64, 1, ts + i as u64);
+    }
+    let elapsed = start.elapsed();
+
+    let throughput = NUM_NONCES as f64 / elapsed.as_secs_f64();
+    let avg_us = elapsed.as_secs_f64() / NUM_NONCES as f64 * 1_000_000.0;
+
+    eprintln!("Nonce cache insertion throughput:");
+    eprintln!("  {:.0} insertions/sec", throughput);
+    eprintln!("  {:.2} µs per insertion", avg_us);
+    eprintln!("  Total: {:.2} ms", elapsed.as_secs_f64() * 1000.0);
+
+    // Target: ≥1,000 msg/sec = 1,000 insertions/sec
+    assert!(throughput >= 1000.0, "Nonce cache too slow: {:.0} ops/sec", throughput);
+}
+
+#[test]
+fn bench_security_ledger_append_latency() {
+    use std::time::Instant;
+    use std::collections::HashMap;
+
+    let temp = NamedTempFile::new().unwrap();
+    let ledger = geometry_dash::SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+    const NUM_EVENTS: usize = 1000;
+    let mut total_ns = 0u128;
+
+    for i in 0..NUM_EVENTS {
+        let mut details = HashMap::new();
+        details.insert("iteration".to_string(), i.to_string());
+
+        let start = Instant::now();
+        let _ = ledger.append_event(
+            EventType::ActionRequested,
+            Principal::Policy,
+            Severity::Info,
+            "run-1",
+            "boot-1",
+            "epoch-1",
+            details,
+        );
+        let elapsed_ns = start.elapsed().as_nanos();
+        total_ns += elapsed_ns;
+    }
+
+    let avg_us = (total_ns as f64 / NUM_EVENTS as f64) / 1000.0;
+    eprintln!("SecurityLedger append latency:");
+    eprintln!("  {:.2} µs average per event", avg_us);
+    eprintln!("  Total: {:.2} ms", total_ns as f64 / 1_000_000.0);
+
+    // Target: <100ms per event
+    assert!(avg_us < 100_000.0, "Ledger append too slow: {:.2} µs", avg_us);
+}
+
+#[test]
+fn bench_hash_chain_verification_speed() {
+    use std::time::Instant;
+    use std::collections::HashMap;
+
+    let temp = NamedTempFile::new().unwrap();
+    let ledger = geometry_dash::SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+    // Append 1000 events
+    for i in 0..1000 {
+        let mut details = HashMap::new();
+        details.insert("iteration".to_string(), i.to_string());
+
+        let _ = ledger.append_event(
+            EventType::ActionRequested,
+            Principal::Policy,
+            Severity::Info,
+            "run-1",
+            "boot-1",
+            "epoch-1",
+            details,
+        );
+    }
+
+    // Measure verification time
+    let start = Instant::now();
+    let result = ledger.verify_chain();
+    let elapsed = start.elapsed();
+
+    let elapsed_us = elapsed.as_secs_f64() * 1_000_000.0;
+    eprintln!("Hash chain verification (1000 entries):");
+    eprintln!("  {:.2} µs total", elapsed_us);
+    eprintln!("  {:.2} µs per entry", elapsed_us / 1000.0);
+
+    assert!(result.is_ok(), "Chain verification failed");
+    assert!(elapsed_us < 50_000.0, "Chain verification too slow: {:.2} µs", elapsed_us);
+}
+
+#[test]
+fn bench_supervisor_heartbeat_latency() {
+    use std::time::Instant;
+
+    let temp = NamedTempFile::new().unwrap();
+    let supervisor = Supervisor::initialize(temp.path().to_str().unwrap(), None).unwrap();
+
+    const NUM_HEARTBEATS: usize = 10_000;
+    let mut total_ns = 0u128;
+
+    for _ in 0..NUM_HEARTBEATS {
+        let start = Instant::now();
+        supervisor.heartbeat(Principal::Policy);
+        total_ns += start.elapsed().as_nanos();
+    }
+
+    let avg_us = (total_ns as f64 / NUM_HEARTBEATS as f64) / 1000.0;
+    eprintln!("Supervisor heartbeat latency:");
+    eprintln!("  {:.3} µs average", avg_us);
+    eprintln!("  Total: {:.2} ms", total_ns as f64 / 1_000_000.0);
+
+    // Should be very fast (sub-microsecond)
+    assert!(avg_us < 100.0, "Heartbeat too slow: {:.3} µs", avg_us);
+}
