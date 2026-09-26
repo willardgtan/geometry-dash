@@ -18,6 +18,7 @@ pub use principals::{
     ActuatorPrincipal, ActuatorState, CommandRequest, ExecutionResult, GateCDecision, GateIDecision,
     AuditPrincipal, AuditState, CorrelationResult, BreachDetection, ForensicAnalysis,
     DeclassifierPrincipal, DeclassifierState, ClassificationLevel, ClassificationDecision, DeclassificationRequest, DeclassificationDecision, ClassificationLabel,
+    LearnerPrincipal, LearnerState, SecurityPattern, PolicyRecommendation, UsageAnalysis, MLReadiness,
 };
 pub use types::{Principal, InterfaceId, MessageType, DataClass};
 
