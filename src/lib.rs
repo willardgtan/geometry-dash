@@ -11,6 +11,9 @@ pub mod config;
 pub mod types;
 pub mod evidence;
 
+#[cfg(test)]
+mod sprint3_e2e_tests;
+
 pub use supervisor::{Supervisor, SupervisorState, PrincipalState, PrincipalHealth, orchestrator::PrincipalOrchestrator};
 pub use security_ledger::{SecurityLedger, SecurityEvent, EventType, Severity};
 pub use ipc::{UniversalMessage, UniversalMessageHeader, IpcError, NonceCache, CapabilityMatrix, PipeManager, PipeInfo};
