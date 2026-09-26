@@ -5,6 +5,7 @@ pub mod supervisor;
 pub mod security_ledger;
 pub mod ipc;
 pub mod hsm;
+pub mod principals;
 pub mod config;
 pub mod types;
 
@@ -12,6 +13,7 @@ pub use supervisor::{Supervisor, SupervisorState, PrincipalState, PrincipalHealt
 pub use security_ledger::{SecurityLedger, SecurityEvent, EventType, Severity};
 pub use ipc::{UniversalMessage, UniversalMessageHeader, IpcError, NonceCache, CapabilityMatrix, PipeManager, PipeInfo};
 pub use hsm::{HsmClient, AutoHsmClient, RealHsmClient, FilesystemHsmClient, SigningKey, HsmError, HsmResult};
+pub use principals::{PolicyPrincipal, PolicyState, GateADecision};
 pub use types::{Principal, InterfaceId, MessageType, DataClass};
 
 #[cfg(test)]
