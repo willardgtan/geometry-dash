@@ -197,6 +197,78 @@ impl SecurityLedger {
     pub fn count(&self) -> u64 {
         *self.ledger_index.lock().unwrap()
     }
+
+    /// Compute Merkle root hash over all events in ledger
+    /// Used for evidence bundle manifest to prove completeness and ordering
+    pub fn compute_event_root_hash(&self) -> std::io::Result<[u8; 32]> {
+        let file = File::open(&self.file_path)?;
+        let reader = BufReader::new(file);
+        let mut hashes = Vec::new();
+
+        // Collect hash of each event in order
+        for line in reader.lines() {
+            let line = line?;
+            if !line.trim().is_empty() {
+                if let Ok(event) = serde_json::from_str::<SecurityEvent>(&line) {
+                    hashes.push(event.current_entry_hash);
+                }
+            }
+        }
+
+        // Compute Merkle root from event hashes
+        Ok(Self::merkle_root(&hashes))
+    }
+
+    /// Compute Merkle root from list of hashes
+    /// Empty tree returns zero hash; single hash returns that hash;
+    /// multiple hashes are paired and hashed recursively up to root
+    fn merkle_root(hashes: &[[u8; 32]]) -> [u8; 32] {
+        if hashes.is_empty() {
+            // Empty tree: return zero hash
+            return [0u8; 32];
+        }
+
+        if hashes.len() == 1 {
+            // Single node: return that hash
+            return hashes[0];
+        }
+
+        let mut tree = hashes.to_vec();
+
+        while tree.len() > 1 {
+            let mut next_level = Vec::new();
+
+            // Process pairs of nodes
+            for chunk in tree.chunks(2) {
+                let mut hasher = Sha256::new();
+                hasher.update(&chunk[0]);
+
+                if chunk.len() == 2 {
+                    // Pair: hash both
+                    hasher.update(&chunk[1]);
+                } else {
+                    // Odd node: hash with itself (right-tree padding)
+                    hasher.update(&chunk[0]);
+                }
+
+                let result = hasher.finalize();
+                let mut hash = [0u8; 32];
+                hash.copy_from_slice(&result);
+                next_level.push(hash);
+            }
+
+            tree = next_level;
+        }
+
+        tree[0]
+    }
+
+    /// Verify event chain integrity against expected Merkle root
+    /// Returns true if computed root matches expected root
+    pub fn verify_event_chain_with_proof(&self, expected_root: [u8; 32]) -> std::io::Result<bool> {
+        let computed = self.compute_event_root_hash()?;
+        Ok(computed == expected_root)
+    }
 }
 
 #[cfg(test)]
@@ -252,5 +324,146 @@ mod tests {
         ).unwrap();
 
         assert!(ledger.verify_chain().is_ok());
+    }
+
+    #[test]
+    fn test_merkle_root_empty() {
+        let hashes: Vec<[u8; 32]> = vec![];
+        let root = SecurityLedger::merkle_root(&hashes);
+        assert_eq!(root, [0u8; 32]);  // Empty tree is zero hash
+    }
+
+    #[test]
+    fn test_merkle_root_single() {
+        let hash = [0xAAu8; 32];
+        let hashes = vec![hash];
+        let root = SecurityLedger::merkle_root(&hashes);
+        assert_eq!(root, hash);  // Single node returns itself
+    }
+
+    #[test]
+    fn test_merkle_root_pair() {
+        let hash1 = [0xAAu8; 32];
+        let hash2 = [0xBBu8; 32];
+        let hashes = vec![hash1, hash2];
+        let root = SecurityLedger::merkle_root(&hashes);
+
+        // Root should be deterministic
+        let root2 = SecurityLedger::merkle_root(&hashes);
+        assert_eq!(root, root2);
+
+        // Should not be zero or either input
+        assert_ne!(root, [0u8; 32]);
+        assert_ne!(root, hash1);
+        assert_ne!(root, hash2);
+    }
+
+    #[test]
+    fn test_merkle_root_consistency() {
+        let hashes = vec![
+            [0xAAu8; 32],
+            [0xBBu8; 32],
+            [0xCCu8; 32],
+            [0xDDu8; 32],
+        ];
+
+        let root1 = SecurityLedger::merkle_root(&hashes);
+        let root2 = SecurityLedger::merkle_root(&hashes);
+
+        // Merkle root should be deterministic
+        assert_eq!(root1, root2);
+    }
+
+    #[test]
+    fn test_event_root_hash_empty_ledger() {
+        let temp = NamedTempFile::new().unwrap();
+        let ledger = SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+        let root = ledger.compute_event_root_hash().unwrap();
+        assert_eq!(root, [0u8; 32]);  // Empty ledger has zero root
+    }
+
+    #[test]
+    fn test_event_root_hash_consistency() {
+        let temp = NamedTempFile::new().unwrap();
+        let ledger = SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+        let mut details = HashMap::new();
+        details.insert("test".to_string(), "value1".to_string());
+
+        ledger.append_event(
+            EventType::SupervisorStart,
+            Principal::Supervisor,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            details.clone(),
+        ).unwrap();
+
+        ledger.append_event(
+            EventType::PolicyDecision,
+            Principal::Policy,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            details,
+        ).unwrap();
+
+        // Root should be consistent across calls
+        let root1 = ledger.compute_event_root_hash().unwrap();
+        let root2 = ledger.compute_event_root_hash().unwrap();
+
+        assert_eq!(root1, root2);
+        assert_ne!(root1, [0u8; 32]);  // Should not be zero (we have events)
+    }
+
+    #[test]
+    fn test_verify_event_chain_with_proof_valid() {
+        let temp = NamedTempFile::new().unwrap();
+        let ledger = SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+        let mut details = HashMap::new();
+        details.insert("test".to_string(), "value".to_string());
+
+        ledger.append_event(
+            EventType::SupervisorStart,
+            Principal::Supervisor,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            details,
+        ).unwrap();
+
+        // Compute root and verify
+        let root = ledger.compute_event_root_hash().unwrap();
+        let verified = ledger.verify_event_chain_with_proof(root).unwrap();
+        assert!(verified);
+    }
+
+    #[test]
+    fn test_verify_event_chain_with_proof_invalid() {
+        let temp = NamedTempFile::new().unwrap();
+        let ledger = SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+        let mut details = HashMap::new();
+        details.insert("test".to_string(), "value".to_string());
+
+        ledger.append_event(
+            EventType::SupervisorStart,
+            Principal::Supervisor,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            details,
+        ).unwrap();
+
+        // Try to verify with wrong root
+        let wrong_root = [0xFFu8; 32];
+        let verified = ledger.verify_event_chain_with_proof(wrong_root).unwrap();
+        assert!(!verified);
     }
 }
