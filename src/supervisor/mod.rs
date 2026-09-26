@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use crate::security_ledger::{SecurityLedger, EventType, Severity};
 use crate::types::Principal;
 use crate::ipc::CapabilityMatrix;
+use crate::hsm::{AutoHsmClient, HsmError};
 use uuid::Uuid;
 use chrono::Utc;
 
@@ -90,6 +91,9 @@ pub struct Supervisor {
     /// IPC capability matrix (who can use which interfaces)
     capabilities: Arc<Mutex<CapabilityMatrix>>,
 
+    /// HSM client for cryptographic operations (with automatic backend selection)
+    hsm_client: Arc<Mutex<AutoHsmClient>>,
+
     /// Configuration
     config: SupervisorConfig,
 
@@ -154,10 +158,20 @@ impl Supervisor {
         capabilities.allow(Principal::Sealer.as_u8(), 11);
         capabilities.allow(Principal::Developer.as_u8(), 11);
 
+        // Initialize HSM client with automatic backend selection
+        let mut hsm_client = AutoHsmClient::new(None, None, ledger_path)?;
+        let is_fallback = hsm_client.is_fallback();
+        if let Err(e) = hsm_client.initialize() {
+            eprintln!("Warning: HSM initialization failed, continuing with fallback: {:?}", e);
+        }
+
         // Log initialization event
         let mut details = std::collections::HashMap::new();
         details.insert("status".to_string(), "initializing".to_string());
         details.insert("principals_count".to_string(), "8".to_string());
+        details.insert("hsm_backend".to_string(),
+            if is_fallback { "filesystem".to_string() } else { "pkcs11".to_string() }
+        );
 
         let _ = ledger.append_event(
             EventType::SupervisorStart,
@@ -169,6 +183,8 @@ impl Supervisor {
             details,
         );
 
+        let hsm_client = Arc::new(Mutex::new(hsm_client));
+
         Ok(Supervisor {
             run_id,
             boot_id,
@@ -176,6 +192,7 @@ impl Supervisor {
             ledger,
             principals: Arc::new(Mutex::new(principals)),
             capabilities: Arc::new(Mutex::new(capabilities)),
+            hsm_client,
             config,
             state: Arc::new(Mutex::new(SupervisorState::Initializing)),
         })
@@ -262,6 +279,11 @@ impl Supervisor {
     /// Get capability matrix reference
     pub fn capabilities(&self) -> Arc<Mutex<CapabilityMatrix>> {
         Arc::clone(&self.capabilities)
+    }
+
+    /// Get HSM client reference
+    pub fn hsm_client(&self) -> Arc<Mutex<AutoHsmClient>> {
+        Arc::clone(&self.hsm_client)
     }
 
     /// Set supervisor state
