@@ -120,9 +120,10 @@ impl SecurityLedger {
     }
 
     /// Calculate hash for event (SHA-256)
+    /// Includes classification metadata for data lineage integrity
     fn hash_event(event: &SecurityEvent) -> [u8; 32] {
         // Serialize without current_entry_hash for hashing
-        let json = serde_json::json!({
+        let mut json_obj = serde_json::json!({
             "ledger_index": event.ledger_index,
             "timestamp_ns": event.timestamp_ns,
             "event_type": event.event_type,
@@ -135,8 +136,19 @@ impl SecurityLedger {
             "details": event.details,
         });
 
+        // Add optional classification fields if present
+        if let Some(ref level) = event.classification_level {
+            json_obj["classification_level"] = serde_json::to_value(level).unwrap_or_default();
+        }
+        if let Some(ref parent) = event.declassification_parent {
+            json_obj["declassification_parent"] = serde_json::json!(parent);
+        }
+        if let Some(ref lineage) = event.data_lineage {
+            json_obj["data_lineage"] = serde_json::json!(lineage);
+        }
+
         let mut hasher = Sha256::new();
-        hasher.update(json.to_string());
+        hasher.update(json_obj.to_string());
 
         let result = hasher.finalize();
         let mut hash = [0u8; 32];
@@ -268,6 +280,131 @@ impl SecurityLedger {
     pub fn verify_event_chain_with_proof(&self, expected_root: [u8; 32]) -> std::io::Result<bool> {
         let computed = self.compute_event_root_hash()?;
         Ok(computed == expected_root)
+    }
+
+    /// Append a classified event with data lineage metadata
+    /// Used for events that track declassification operations
+    ///
+    /// Preconditions:
+    /// - classification_level is set (Some value required)
+    /// - If declassified, declassification_parent and data_lineage are set
+    ///
+    /// Postconditions:
+    /// - Event appended with hash chain intact
+    /// - Lineage chain recorded in ledger for audit trail
+    pub fn append_classified_event(
+        &self,
+        event_type: EventType,
+        principal: Principal,
+        severity: Severity,
+        run_id: &str,
+        boot_id: &str,
+        epoch_id: &str,
+        classification_level: crate::principals::ClassificationLevel,
+        declassification_parent: Option<String>,
+        data_lineage: Option<Vec<String>>,
+        details: HashMap<String, String>,
+    ) -> std::io::Result<u64> {
+        let mut ledger_idx = self.ledger_index.lock().unwrap();
+        let mut last = self.last_hash.lock().unwrap();
+
+        // Create event with zero hash initially
+        let mut event = SecurityEvent::new(
+            *ledger_idx,
+            event_type,
+            principal,
+            severity,
+            run_id.to_string(),
+            boot_id.to_string(),
+            epoch_id.to_string(),
+            *last,  // prev_hash
+            [0u8; 32],  // current_hash (to be calculated)
+            details,
+        );
+
+        // Set classification metadata
+        event.set_classification(classification_level);
+        if let Some(parent) = declassification_parent {
+            if let Some(lineage) = data_lineage {
+                event.set_declassification_lineage(parent, lineage);
+            }
+        }
+
+        // Calculate hash (includes classification fields)
+        event.current_entry_hash = Self::hash_event(&event);
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&event)?;
+
+        // Write to file (atomic append)
+        let mut writer = self.writer.lock().unwrap();
+        writeln!(writer, "{}", json)?;
+        writer.flush()?;
+
+        // Update state
+        *last = event.current_entry_hash;
+        self.index.lock().unwrap().push(event.current_entry_hash);
+        *ledger_idx += 1;
+
+        Ok(*ledger_idx - 1)  // Return index of this entry
+    }
+
+    /// Get complete lineage chain for a declassification event
+    /// Searches ledger for events with matching declassification_parent
+    ///
+    /// Returns:
+    /// - Some(Vec<SecurityEvent>) if events with matching parent found
+    /// - None if no matching lineage found
+    pub fn get_lineage(&self, declassification_parent: &str) -> std::io::Result<Option<Vec<SecurityEvent>>> {
+        let file = File::open(&self.file_path)?;
+        let reader = BufReader::new(file);
+        let mut lineage_events = Vec::new();
+
+        for line in reader.lines() {
+            let line = line?;
+            if !line.trim().is_empty() {
+                if let Ok(event) = serde_json::from_str::<SecurityEvent>(&line) {
+                    // Check if this event is part of the lineage chain
+                    if let Some(ref parent) = event.declassification_parent {
+                        if parent == declassification_parent {
+                            lineage_events.push(event);
+                        }
+                    }
+                }
+            }
+        }
+
+        if lineage_events.is_empty() {
+            Ok(None)
+        } else {
+            // Sort by ledger_index to maintain temporal order
+            lineage_events.sort_by_key(|e| e.ledger_index);
+            Ok(Some(lineage_events))
+        }
+    }
+
+    /// Get all classified events for a principal
+    /// Returns events where principal matches and classification_level is set
+    pub fn get_principal_classified_events(
+        &self,
+        principal: Principal,
+    ) -> std::io::Result<Vec<SecurityEvent>> {
+        let file = File::open(&self.file_path)?;
+        let reader = BufReader::new(file);
+        let mut events = Vec::new();
+
+        for line in reader.lines() {
+            let line = line?;
+            if !line.trim().is_empty() {
+                if let Ok(event) = serde_json::from_str::<SecurityEvent>(&line) {
+                    if event.principal == principal && event.classification_level.is_some() {
+                        events.push(event);
+                    }
+                }
+            }
+        }
+
+        Ok(events)
     }
 }
 
@@ -465,5 +602,239 @@ mod tests {
         let wrong_root = [0xFFu8; 32];
         let verified = ledger.verify_event_chain_with_proof(wrong_root).unwrap();
         assert!(!verified);
+    }
+
+    #[test]
+    fn test_append_classified_event() {
+        use crate::principals::ClassificationLevel;
+
+        let temp = NamedTempFile::new().unwrap();
+        let ledger = SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+        let mut details = HashMap::new();
+        details.insert("field".to_string(), "sensitive_data".to_string());
+
+        // Append a classified event
+        let idx = ledger.append_classified_event(
+            EventType::ArtifactDeclassified,
+            Principal::Policy,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            ClassificationLevel::SensitiveReward,
+            None,
+            None,
+            details,
+        ).unwrap();
+
+        assert_eq!(idx, 0);
+        assert_eq!(ledger.count(), 1);
+    }
+
+    #[test]
+    fn test_append_classified_event_with_lineage() {
+        use crate::principals::ClassificationLevel;
+
+        let temp = NamedTempFile::new().unwrap();
+        let ledger = SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+        let mut details = HashMap::new();
+        details.insert("field".to_string(), "declassified_data".to_string());
+
+        let lineage = vec!["parent-001".to_string(), "parent-002".to_string()];
+
+        // Append a declassified event with lineage
+        let idx = ledger.append_classified_event(
+            EventType::ArtifactDeclassified,
+            Principal::Audit,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            ClassificationLevel::PrivilegedTelemetry,
+            Some("decl-001".to_string()),
+            Some(lineage.clone()),
+            details,
+        ).unwrap();
+
+        assert_eq!(idx, 0);
+        assert_eq!(ledger.count(), 1);
+
+        // Verify event can be read back with classification
+        let file = std::fs::File::open(temp.path()).unwrap();
+        let reader = std::io::BufReader::new(file);
+        if let Some(first_line) = reader.lines().next() {
+            let event: SecurityEvent = serde_json::from_str(&first_line.unwrap()).unwrap();
+            assert!(event.is_declassified());
+            assert_eq!(event.get_lineage(), Some(&lineage));
+        }
+    }
+
+    #[test]
+    fn test_get_lineage() {
+        use crate::principals::ClassificationLevel;
+
+        let temp = NamedTempFile::new().unwrap();
+        let ledger = SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+        let lineage1 = vec!["orig-001".to_string()];
+        let lineage2 = vec!["orig-001".to_string(), "decl-001".to_string()];
+
+        // Add two events with same parent
+        ledger.append_classified_event(
+            EventType::ArtifactDeclassified,
+            Principal::Audit,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            ClassificationLevel::SensitiveReward,
+            Some("parent-001".to_string()),
+            Some(lineage1),
+            HashMap::new(),
+        ).unwrap();
+
+        ledger.append_classified_event(
+            EventType::ArtifactDeclassified,
+            Principal::Audit,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            ClassificationLevel::SensitiveReward,
+            Some("parent-001".to_string()),
+            Some(lineage2),
+            HashMap::new(),
+        ).unwrap();
+
+        // Retrieve lineage
+        let result = ledger.get_lineage("parent-001").unwrap();
+        assert!(result.is_some());
+        let events = result.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].ledger_index, 0);
+        assert_eq!(events[1].ledger_index, 1);
+    }
+
+    #[test]
+    fn test_get_lineage_not_found() {
+        use crate::principals::ClassificationLevel;
+
+        let temp = NamedTempFile::new().unwrap();
+        let ledger = SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+        // Add an event with a parent
+        ledger.append_classified_event(
+            EventType::ArtifactDeclassified,
+            Principal::Audit,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            ClassificationLevel::SensitiveReward,
+            Some("parent-001".to_string()),
+            Some(vec!["orig".to_string()]),
+            HashMap::new(),
+        ).unwrap();
+
+        // Try to get lineage for non-existent parent
+        let result = ledger.get_lineage("parent-999").unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_principal_classified_events() {
+        use crate::principals::ClassificationLevel;
+
+        let temp = NamedTempFile::new().unwrap();
+        let ledger = SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+        // Add event for Policy principal
+        ledger.append_classified_event(
+            EventType::ActionApproved,
+            Principal::Policy,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            ClassificationLevel::Unrestricted,
+            None,
+            None,
+            HashMap::new(),
+        ).unwrap();
+
+        // Add regular event for Audit principal (no classification)
+        let mut details = HashMap::new();
+        details.insert("action".to_string(), "audit".to_string());
+        ledger.append_event(
+            EventType::ActionExecuted,
+            Principal::Audit,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            details,
+        ).unwrap();
+
+        // Add classified event for Audit principal
+        ledger.append_classified_event(
+            EventType::ArtifactDeclassified,
+            Principal::Audit,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            ClassificationLevel::SensitiveReward,
+            None,
+            None,
+            HashMap::new(),
+        ).unwrap();
+
+        // Get classified events for Audit
+        let events = ledger.get_principal_classified_events(Principal::Audit).unwrap();
+        assert_eq!(events.len(), 1);  // Only the classified one
+        assert_eq!(events[0].ledger_index, 2);
+
+        // Get classified events for Policy
+        let policy_events = ledger.get_principal_classified_events(Principal::Policy).unwrap();
+        assert_eq!(policy_events.len(), 1);
+        assert_eq!(policy_events[0].ledger_index, 0);
+    }
+
+    #[test]
+    fn test_classified_events_preserve_hash_chain() {
+        use crate::principals::ClassificationLevel;
+
+        let temp = NamedTempFile::new().unwrap();
+        let ledger = SecurityLedger::open(temp.path().to_str().unwrap()).unwrap();
+
+        // Add regular event
+        ledger.append_event(
+            EventType::SupervisorStart,
+            Principal::Supervisor,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            HashMap::new(),
+        ).unwrap();
+
+        // Add classified event
+        ledger.append_classified_event(
+            EventType::ArtifactDeclassified,
+            Principal::Audit,
+            Severity::Info,
+            "run-001",
+            "boot-001",
+            "epoch-001",
+            ClassificationLevel::SensitiveReward,
+            None,
+            None,
+            HashMap::new(),
+        ).unwrap();
+
+        // Verify hash chain still works
+        assert!(ledger.verify_chain().is_ok());
     }
 }
