@@ -1,7 +1,9 @@
 // Universal Message Format for IPC (Week 1 Task 3.1)
+// Sprint 2 Task 2.5: Message Classification
 
 use serde::{Deserialize, Serialize};
 use crate::types::Principal;
+use crate::principals::ClassificationLevel;
 
 // Message flags (bitflags for message properties)
 pub const FLAG_REQUIRES_AUTH: u32 = 0x01;      // Signature mandatory
@@ -62,6 +64,19 @@ pub struct UniversalMessageHeader {
 
     /// Sequence number for ordering within an interface
     pub sequence_number: u64,
+
+    // Data classification fields (Sprint 2 Task 2.5)
+    /// Classification level of the message payload
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification_level: Option<ClassificationLevel>,
+
+    /// Minimum clearance required to read/process this message
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_clearance: Option<ClassificationLevel>,
+
+    /// Flag: has payload been declassified from a higher level
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declassification_approved: Option<bool>,
 }
 
 impl UniversalMessageHeader {
@@ -97,6 +112,9 @@ impl UniversalMessageHeader {
             witness_signature: [0u8; 64],  // Set by signer before sending
             source_evidence_id: None,
             sequence_number: 0,  // Set by IPC layer
+            classification_level: None,
+            required_clearance: None,
+            declassification_approved: None,
         }
     }
 
@@ -157,6 +175,60 @@ impl UniversalMessageHeader {
     /// Check if this message is marked as critical
     pub fn is_critical(&self) -> bool {
         (self.flags & FLAG_CRITICAL) != 0
+    }
+
+    /// Set the classification level for this message payload
+    pub fn set_classification(&mut self, level: ClassificationLevel) {
+        self.classification_level = Some(level);
+    }
+
+    /// Set the minimum clearance required to process this message
+    pub fn set_required_clearance(&mut self, level: ClassificationLevel) {
+        self.required_clearance = Some(level);
+    }
+
+    /// Mark this message as declassified from a higher level
+    pub fn mark_declassified(&mut self) {
+        self.declassification_approved = Some(true);
+    }
+
+    /// Get the classification level of this message
+    pub fn get_classification(&self) -> Option<ClassificationLevel> {
+        self.classification_level
+    }
+
+    /// Get the required clearance level for this message
+    pub fn get_required_clearance(&self) -> Option<ClassificationLevel> {
+        self.required_clearance
+    }
+
+    /// Check if this message is marked as declassified
+    pub fn is_declassified(&self) -> bool {
+        self.declassification_approved.unwrap_or(false)
+    }
+
+    /// Validate authorization: check if receiver has required clearance
+    ///
+    /// Preconditions:
+    /// - Both receiver principal and required clearance are known
+    ///
+    /// Returns: true if receiver can process message (has sufficient clearance)
+    pub fn authorize_receiver(&self, principal_clearances: &[(u8, Vec<ClassificationLevel>)]) -> bool {
+        // If no clearance requirement, anyone can read
+        if self.required_clearance.is_none() {
+            return true;
+        }
+
+        let required = self.required_clearance.unwrap();
+
+        // Find this principal's clearances
+        for (principal, clearances) in principal_clearances {
+            if *principal == self.receiver_principal {
+                return clearances.contains(&required);
+            }
+        }
+
+        false  // Principal not found in clearance list
     }
 }
 
@@ -341,5 +413,113 @@ mod tests {
 
         header.set_evidence_id("artifact-123".to_string());
         assert_eq!(header.source_evidence_id, Some("artifact-123".to_string()));
+    }
+
+    #[test]
+    fn test_message_classification() {
+        let mut header = UniversalMessageHeader::new(1, MESSAGE_TYPE_REQUEST, 1, 2, 0);
+        assert_eq!(header.get_classification(), None);
+
+        header.set_classification(ClassificationLevel::SensitiveReward);
+        assert_eq!(header.get_classification(), Some(ClassificationLevel::SensitiveReward));
+    }
+
+    #[test]
+    fn test_message_required_clearance() {
+        let mut header = UniversalMessageHeader::new(1, MESSAGE_TYPE_REQUEST, 1, 2, 0);
+        assert_eq!(header.get_required_clearance(), None);
+
+        header.set_required_clearance(ClassificationLevel::PrivilegedTelemetry);
+        assert_eq!(
+            header.get_required_clearance(),
+            Some(ClassificationLevel::PrivilegedTelemetry)
+        );
+    }
+
+    #[test]
+    fn test_message_declassification() {
+        let mut header = UniversalMessageHeader::new(1, MESSAGE_TYPE_REQUEST, 1, 2, 0);
+        assert!(!header.is_declassified());
+
+        header.mark_declassified();
+        assert!(header.is_declassified());
+    }
+
+    #[test]
+    fn test_authorize_receiver_no_clearance_required() {
+        let header = UniversalMessageHeader::new(1, MESSAGE_TYPE_REQUEST, 1, 2, 0);
+        // No clearance requirement set
+        assert!(header.authorize_receiver(&[]));
+    }
+
+    #[test]
+    fn test_authorize_receiver_with_clearance() {
+        let mut header = UniversalMessageHeader::new(1, MESSAGE_TYPE_REQUEST, 1, 2, 0);
+        header.set_required_clearance(ClassificationLevel::SensitiveReward);
+
+        // Receiver principal is 2, with clearances
+        let clearances = vec![(
+            2,
+            vec![
+                ClassificationLevel::Unrestricted,
+                ClassificationLevel::SensitiveReward,
+            ],
+        )];
+
+        assert!(header.authorize_receiver(&clearances));
+    }
+
+    #[test]
+    fn test_authorize_receiver_insufficient_clearance() {
+        let mut header = UniversalMessageHeader::new(1, MESSAGE_TYPE_REQUEST, 1, 2, 0);
+        header.set_required_clearance(ClassificationLevel::PrivilegedTelemetry);
+
+        // Receiver principal is 2, but only has Unrestricted clearance
+        let clearances = vec![(
+            2,
+            vec![ClassificationLevel::Unrestricted, ClassificationLevel::SensitiveReward],
+        )];
+
+        assert!(!header.authorize_receiver(&clearances));
+    }
+
+    #[test]
+    fn test_authorize_receiver_unknown_principal() {
+        let mut header = UniversalMessageHeader::new(1, MESSAGE_TYPE_REQUEST, 1, 2, 0);
+        header.set_required_clearance(ClassificationLevel::SensitiveReward);
+
+        // Principal 5 not in clearance list
+        let clearances = vec![(
+            3,
+            vec![ClassificationLevel::Unrestricted, ClassificationLevel::SensitiveReward],
+        )];
+
+        assert!(!header.authorize_receiver(&clearances));
+    }
+
+    #[test]
+    fn test_classified_message_serialization() {
+        let mut header = UniversalMessageHeader::new(1, MESSAGE_TYPE_REQUEST, 1, 2, 0);
+        header.set_classification(ClassificationLevel::PrivilegedTelemetry);
+        header.set_required_clearance(ClassificationLevel::PrivilegedTelemetry);
+        header.mark_declassified();
+
+        let msg = UniversalMessage {
+            header,
+            payload: b"secret".to_vec(),
+        };
+
+        let json = msg.to_json().unwrap();
+        let parsed = UniversalMessage::from_json(&json).unwrap();
+
+        assert_eq!(
+            parsed.header.get_classification(),
+            Some(ClassificationLevel::PrivilegedTelemetry)
+        );
+        assert_eq!(
+            parsed.header.get_required_clearance(),
+            Some(ClassificationLevel::PrivilegedTelemetry)
+        );
+        assert!(parsed.header.is_declassified());
     }
 }
