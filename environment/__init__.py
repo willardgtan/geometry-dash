@@ -1,0 +1,1 @@
+"""Geometry Dash Gymnasium environment."""

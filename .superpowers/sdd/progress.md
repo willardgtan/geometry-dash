@@ -28,3 +28,4 @@ Task 0c: complete (commits 91ae26b..91ae26b, tests: python -m unittest tests.tra
 Task 0d: complete (commits d6d0d56..d6d0d56, tests: python -m unittest tests.training.test_curriculum -v → 12/12 pass)
 Task 0e: complete (commits d6d0d56..d631586, tests: python -m unittest tests.test_mechanics_docs -v → 8/8 pass)
 Task 1: complete (commits d631586..9bae1fd, tests: python -m unittest tests.data.test_gdsolver_trajectory -v → 9/9 pass)
+Task 2: complete (commits 9bae1fd..011d711, tests: python -m unittest tests.data.test_perception -v → 13/13 pass)
