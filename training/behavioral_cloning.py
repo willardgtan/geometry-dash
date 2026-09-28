@@ -19,7 +19,7 @@ class BehavioralCloning:
 
     def __init__(
         self,
-        state_dim: int = 20,
+        state_dim: int = 21,  # [x, y, vx, vy, rotation, mode(7), grounded, contact(5), gravity_mod, size_mod, speed_scaling]
         action_dim: int = 2,  # Binary: [no-action, action]
         learning_rate: float = 1e-3,
         batch_size: int = 32,
@@ -91,7 +91,7 @@ class BehavioralCloning:
         # Game state modifiers (3)
         state.extend([transition.gravity_mod, transition.size_mod, transition.speed_scaling])
 
-        assert len(state) == 20, f"Expected state dim 20, got {len(state)}"
+        assert len(state) == 21, f"Expected state dim 21, got {len(state)}"
         return state
 
     def prepare_demonstrations(

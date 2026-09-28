@@ -1,0 +1,222 @@
+{
+  "game_modes": {
+    "cube": {
+      "jump_velocity": 21.80,
+      "gravity": 103.0,
+      "max_airtime_s": 0.417,
+      "horizontal_speed": 10.389,
+      "control_type": "tap",
+      "collision_type": "circle_aabb"
+    },
+    "ship": {
+      "thrust": 80.0,
+      "gravity": 50.0,
+      "max_tilt_degrees": 45,
+      "control_type": "hold",
+      "collision_type": "circle_aabb"
+    },
+    "wave": {
+      "jump_velocity": 18.0,
+      "gravity": 103.0,
+      "frequency_frames": 30,
+      "control_type": "tap_timing",
+      "collision_type": "circle_aabb"
+    },
+    "ball": {
+      "jump_velocity": 20.0,
+      "bounce_factor": 0.8,
+      "gravity": 103.0,
+      "control_type": "tap",
+      "collision_type": "circle_aabb"
+    },
+    "ufo": {
+      "vertical_speed": 25.0,
+      "gravity_reversible": true,
+      "control_type": "toggle_gravity",
+      "collision_type": "circle_aabb"
+    },
+    "robot": {
+      "jump_velocity": 21.80,
+      "gravity": 103.0,
+      "double_jump": true,
+      "control_type": "tap_double",
+      "collision_type": "circle_aabb"
+    },
+    "spider": {
+      "jump_velocity": 21.80,
+      "gravity": 103.0,
+      "wall_climb": true,
+      "control_type": "jump_and_hold",
+      "collision_type": "circle_aabb"
+    }
+  },
+  "obstacles": {
+    "spike": {
+      "effect": "death",
+      "shape": "triangular",
+      "contact_type": "spike",
+      "velocity_mod": null
+    },
+    "block": {
+      "effect": "platform",
+      "shape": "rectangular",
+      "contact_type": "platform",
+      "velocity_mod": null
+    },
+    "orb": {
+      "effect": "bounce",
+      "shape": "circular",
+      "contact_type": "orb",
+      "velocity_mod": {
+        "vy": -25.0
+      },
+      "radius": 15
+    },
+    "pad": {
+      "effect": "bounce_strong",
+      "shape": "rectangular",
+      "contact_type": "pad",
+      "velocity_mod": {
+        "vy": -30.0
+      }
+    },
+    "portal": {
+      "effect": "multi",
+      "shape": "rectangular",
+      "contact_type": "portal",
+      "portal_types": ["gravity", "speed", "mode"],
+      "effects_by_type": {
+        "gravity": {
+          "gravity_mod": -1.0,
+          "vy_negate": true
+        },
+        "speed": {
+          "speed_scaling_multiplier": 1.5
+        },
+        "mode": {
+          "mode_change": true
+        }
+      }
+    },
+    "moving_geometry": {
+      "effect": "platform_moving",
+      "shape": "rectangular",
+      "contact_type": "platform",
+      "movement": "linear_interpolation",
+      "velocity_mod": null
+    }
+  },
+  "physics_calibration": {
+    "source": "geometry-dash-rl",
+    "calibration_data": "18 real flat-ground cube jumps",
+    "measured_values": {
+      "cube_jump_apex_blocks": 2.128,
+      "cube_airtime_seconds": 0.417,
+      "horizontal_speed_blocks_per_s": 10.389
+    },
+    "fitted_constants": {
+      "jump_velocity": 21.80,
+      "gravity": 103.0
+    },
+    "precision_note": "High precision (8+ decimals) essential for contact tests"
+  },
+  "gravity_mechanics": {
+    "normal": {
+      "gravity_mod": 1.0,
+      "direction": "downward",
+      "coordinate_system": "standard"
+    },
+    "inverted": {
+      "gravity_mod": -1.0,
+      "direction": "upward_relative_to_inverted_frame",
+      "coordinate_system": "180_degree_rotated",
+      "effects": {
+        "y_coordinate": "flipped",
+        "vy_sign": "negated"
+      }
+    }
+  },
+  "state_representation": {
+    "dimensions": 21,
+    "schema": [
+      "x",
+      "y",
+      "vx",
+      "vy",
+      "rotation",
+      "mode_onehot_0",
+      "mode_onehot_1",
+      "mode_onehot_2",
+      "mode_onehot_3",
+      "mode_onehot_4",
+      "mode_onehot_5",
+      "mode_onehot_6",
+      "grounded",
+      "contact_type_onehot_0_platform",
+      "contact_type_onehot_1_spike",
+      "contact_type_onehot_2_orb",
+      "contact_type_onehot_3_pad",
+      "contact_type_onehot_4_air",
+      "gravity_mod",
+      "size_mod",
+      "speed_scaling"
+    ]
+  },
+  "timing": {
+    "physics_tick_hz": 240,
+    "render_frame_hz": 60,
+    "ticks_per_frame": 4,
+    "tick_duration_ms": 4.17,
+    "frame_duration_ms": 16.67
+  },
+  "curriculum_phases": [
+    {
+      "phase": 0,
+      "name": "Reactive",
+      "description": "Single cube jumps, flat ground",
+      "gate_threshold": 0.95
+    },
+    {
+      "phase": 1,
+      "name": "Ballistic",
+      "description": "Jump timing and velocity control",
+      "gate_threshold": 0.93
+    },
+    {
+      "phase": 2,
+      "name": "LocalGeometry",
+      "description": "Obstacle sequences and gaps",
+      "gate_threshold": 0.90
+    },
+    {
+      "phase": 3,
+      "name": "StateDep",
+      "description": "Orbs, pads, gravity",
+      "gate_threshold": 0.85
+    },
+    {
+      "phase": 4,
+      "name": "ModeTransition",
+      "description": "Portals and mode changes",
+      "gate_threshold": 0.80
+    },
+    {
+      "phase": 5,
+      "name": "ContinControl",
+      "description": "Ship, wave, robot modes",
+      "gate_threshold": 0.78
+    },
+    {
+      "phase": 6,
+      "name": "LongHorizon",
+      "description": "Long sequences requiring planning",
+      "gate_threshold": 0.75
+    },
+    {
+      "phase": 7,
+      "name": "Generalization",
+      "description": "Unseen content and randomized physics",
+      "gate_threshold": 0.70
+    }
+  ]
+}
