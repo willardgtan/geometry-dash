@@ -1,0 +1,260 @@
+{
+  "official_levels": [
+    {
+      "id": 1,
+      "name": "Stereo Madness",
+      "stars": 1,
+      "difficulty": 1.5,
+      "mechanics": ["spikes", "blocks", "jumps"],
+      "phase": 0,
+      "phase_name": "Reactive"
+    },
+    {
+      "id": 2,
+      "name": "Back on Track",
+      "stars": 2,
+      "difficulty": 3.0,
+      "mechanics": ["spikes", "blocks", "jump_timing"],
+      "phase": 1,
+      "phase_name": "Ballistic"
+    },
+    {
+      "id": 3,
+      "name": "Polargeist",
+      "stars": 3,
+      "difficulty": 4.5,
+      "mechanics": ["spikes", "blocks", "gaps"],
+      "phase": 1,
+      "phase_name": "Ballistic"
+    },
+    {
+      "id": 4,
+      "name": "Dry Out",
+      "stars": 4,
+      "difficulty": 6.0,
+      "mechanics": ["spikes", "blocks", "moving_geometry"],
+      "phase": 2,
+      "phase_name": "Local Geometry"
+    },
+    {
+      "id": 5,
+      "name": "Basement",
+      "stars": 5,
+      "difficulty": 7.5,
+      "mechanics": ["spikes", "blocks", "jumping_timing"],
+      "phase": 2,
+      "phase_name": "Local Geometry"
+    },
+    {
+      "id": 6,
+      "name": "Can't Let Go",
+      "stars": 6,
+      "difficulty": 9.0,
+      "mechanics": ["orb", "gravity", "timing"],
+      "phase": 3,
+      "phase_name": "State-Dependent"
+    },
+    {
+      "id": 7,
+      "name": "Jumper",
+      "stars": 7,
+      "difficulty": 10.5,
+      "mechanics": ["orb", "pad", "gravity"],
+      "phase": 3,
+      "phase_name": "State-Dependent"
+    },
+    {
+      "id": 8,
+      "name": "Demon Park",
+      "stars": 8,
+      "difficulty": 12.0,
+      "mechanics": ["gravity", "spikes", "complex_timing"],
+      "phase": 3,
+      "phase_name": "State-Dependent"
+    },
+    {
+      "id": 9,
+      "name": "Clusterfuck",
+      "stars": 9,
+      "difficulty": 13.5,
+      "mechanics": ["portal", "gravity_inversion", "speed_portal"],
+      "phase": 4,
+      "phase_name": "Mode Transition"
+    },
+    {
+      "id": 10,
+      "name": "Space Pirate",
+      "stars": 10,
+      "difficulty": 15.0,
+      "mechanics": ["portal", "gravity", "mode_switching"],
+      "phase": 4,
+      "phase_name": "Mode Transition"
+    },
+    {
+      "id": 11,
+      "name": "Airborne Robots",
+      "stars": 11,
+      "difficulty": 16.5,
+      "mechanics": ["ship", "wave", "robot", "timing"],
+      "phase": 5,
+      "phase_name": "Continuous Control"
+    },
+    {
+      "id": 12,
+      "name": "The Challenge",
+      "stars": 12,
+      "difficulty": 18.0,
+      "mechanics": ["ship", "gravity", "complex_patterns"],
+      "phase": 5,
+      "phase_name": "Continuous Control"
+    },
+    {
+      "id": 13,
+      "name": "Electroman Adventures",
+      "stars": 13,
+      "difficulty": 19.5,
+      "mechanics": ["gravity", "portals", "long_sequences"],
+      "phase": 6,
+      "phase_name": "Long Horizon"
+    },
+    {
+      "id": 14,
+      "name": "Jungles",
+      "stars": 14,
+      "difficulty": 21.0,
+      "mechanics": ["gravity", "moving_geometry", "complex_sequences"],
+      "phase": 6,
+      "phase_name": "Long Horizon"
+    },
+    {
+      "id": 15,
+      "name": "Fingerdash",
+      "stars": 15,
+      "difficulty": 22.5,
+      "mechanics": ["fast_paced", "complex_jumps", "precise_timing"],
+      "phase": 6,
+      "phase_name": "Long Horizon"
+    },
+    {
+      "id": 16,
+      "name": "Dash",
+      "stars": 16,
+      "difficulty": 24.0,
+      "mechanics": ["ship", "wave", "complex_modes"],
+      "phase": 5,
+      "phase_name": "Continuous Control"
+    },
+    {
+      "id": 17,
+      "name": "Geometric Dominator",
+      "stars": 17,
+      "difficulty": 25.5,
+      "mechanics": ["all_modes", "gravity", "long_sequences"],
+      "phase": 6,
+      "phase_name": "Long Horizon"
+    },
+    {
+      "id": 18,
+      "name": "Hexagon Force",
+      "stars": 18,
+      "difficulty": 27.0,
+      "mechanics": ["ship", "complex_timing"],
+      "phase": 5,
+      "phase_name": "Continuous Control"
+    },
+    {
+      "id": 19,
+      "name": "Blast Processing",
+      "stars": 19,
+      "difficulty": 28.5,
+      "mechanics": ["fast_paced", "many_obstacles", "long_sequences"],
+      "phase": 7,
+      "phase_name": "Generalization"
+    },
+    {
+      "id": 20,
+      "name": "Theory of Everything 2",
+      "stars": 20,
+      "difficulty": 30.0,
+      "mechanics": ["all_modes", "gravity", "complex_long_sequence"],
+      "phase": 7,
+      "phase_name": "Generalization"
+    },
+    {
+      "id": 21,
+      "name": "Geometrical Dominator",
+      "stars": 21,
+      "difficulty": 31.5,
+      "mechanics": ["robot", "spider", "complex_control"],
+      "phase": 5,
+      "phase_name": "Continuous Control"
+    },
+    {
+      "id": 22,
+      "name": "Clubstep",
+      "stars": 22,
+      "difficulty": 33.0,
+      "mechanics": ["all_mechanics", "extreme_difficulty", "extreme_length"],
+      "phase": 7,
+      "phase_name": "Generalization"
+    }
+  ],
+  "phases": [
+    {
+      "phase": 0,
+      "name": "Reactive",
+      "description": "Single cube jumps over spikes and blocks on flat ground",
+      "goal": "Learn jump/no-jump decision with >=95% accuracy",
+      "mechanics": ["spikes", "blocks", "flat_ground"]
+    },
+    {
+      "phase": 1,
+      "name": "Ballistic",
+      "description": "Jump timing and landing position control",
+      "goal": "Complete short cube sections with >=90% success",
+      "mechanics": ["jump_timing", "velocity_control", "landing"]
+    },
+    {
+      "phase": 2,
+      "name": "Local Geometry",
+      "description": "Navigate blocks, spikes, and gaps; reason about nearby obstacles",
+      "goal": "Complete sections with 3-5 obstacles in sequence at >=85% success",
+      "mechanics": ["obstacle_sequences", "gap_jumping", "local_planning"]
+    },
+    {
+      "phase": 3,
+      "name": "State-Dependent",
+      "description": "Use orbs and pads; handle fresh-click vs held input; learn gravity sensitivity",
+      "goal": "Complete orb/pad sections with >=80% success",
+      "mechanics": ["orb", "pad", "gravity_sensitivity", "input_mode"]
+    },
+    {
+      "phase": 4,
+      "name": "Mode Transition",
+      "description": "Navigate portals (gravity inversion, speed changes, mode switches)",
+      "goal": "Complete portal sections with >=75% success on first mode transition",
+      "mechanics": ["portal", "gravity_inversion", "speed_portal", "mode_change"]
+    },
+    {
+      "phase": 5,
+      "name": "Continuous Control",
+      "description": "Master ship, wave, robot modes (different control schemes)",
+      "goal": "Complete ship/wave/robot sections with >=75% success",
+      "mechanics": ["ship", "wave", "robot", "continuous_input"]
+    },
+    {
+      "phase": 6,
+      "name": "Long Horizon",
+      "description": "Plan across obstacle sequences requiring early setup (20+ seconds)",
+      "goal": "Complete full levels or long sections with >=70% success",
+      "mechanics": ["planning", "long_sequences", "recovery"]
+    },
+    {
+      "phase": 7,
+      "name": "Generalization",
+      "description": "Unseen level sections, random physics perturbations",
+      "goal": "Complete unseen content with >=60% success on first attempt",
+      "mechanics": ["generalization", "robustness", "adaptation"]
+    }
+  ]
+}
