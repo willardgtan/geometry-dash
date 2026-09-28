@@ -35,3 +35,5 @@ Task 5: complete (commits 7ec5c3d..b896adf, tests: python -m unittest tests.test
 Task 6: complete (commits b896adf..ae1c28b, tests: python -m unittest tests.test_ppo -v → 14/14 pass)
 Task 7: complete (commits ae1c28b..8edb556, tests: python -m unittest tests.test_curriculum_scheduler -v → 18/18 pass)
 Task 8: complete (commits 8edb556..5271d67, tests: python -m unittest tests.test_residual_physics -v → 12/12 pass)
+Task 9: complete (commits 5271d67..a9507df, tests: python -m unittest tests.test_phase1_mastery -v → 17/17 pass)
+Task 10: complete (commits a9507df..fc7e3eb, tests: python -m unittest tests.test_pipeline -v → 18/18 pass)
