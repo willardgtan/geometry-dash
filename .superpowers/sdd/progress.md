@@ -32,3 +32,4 @@ Task 2: complete (commits 9bae1fd..011d711, tests: python -m unittest tests.data
 Task 3: complete (commits 011d711..ad9abcd, tests: python -m unittest tests.test_environment -v → 11/11 pass)
 Task 4: complete (commits ad9abcd..7ec5c3d, tests: python -m unittest tests.test_physics -v → 15/15 pass)
 Task 5: complete (commits 7ec5c3d..b896adf, tests: python -m unittest tests.test_cnn_encoder -v → 11/11 pass)
+Task 6: complete (commits b896adf..ae1c28b, tests: python -m unittest tests.test_ppo -v → 14/14 pass)
